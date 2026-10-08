@@ -1,0 +1,16 @@
+# Deterministic line endings for a public, cross-platform source tree.
+#
+# Why this file exists: the v0.4.0 release package was built on a machine whose
+# global `core.autocrlf=true` re-expanded some files from LF to CRLF, so the
+# working tree and the packaged ZIP did not match the committed blobs. Pinning
+# the policy here removes that class of surprise: the same bytes are checked out
+# on Windows, macOS and Linux, and a fresh build is reproducible.
+#
+# Source files are stored and checked out as LF. Binary assets are never
+# converted.
+
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
+*.zip binary

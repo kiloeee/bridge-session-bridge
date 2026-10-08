@@ -1,0 +1,53 @@
+# ---------------------------------------------------------------------------
+# Local archive / conversation data — must never be committed.
+# Backup JSON produced by the extension contains full conversation content.
+# ---------------------------------------------------------------------------
+deepseek-archive-*.json
+*.chat-export.json
+
+# ---------------------------------------------------------------------------
+# Secrets and credentials
+# ---------------------------------------------------------------------------
+.env
+.env.*
+*.pem
+*.key
+credentials*.json
+secrets*.json
+
+# ---------------------------------------------------------------------------
+# Browser profile / captured storage (IndexedDB, cookies, extensions state)
+# ---------------------------------------------------------------------------
+*chrome-profile*/
+*chromium-profile*/
+*edge-profile*/
+**/Default/Cookies
+**/Default/Local Storage/
+**/Default/IndexedDB/
+**/Local Extension Settings/
+*.sqlite
+*.sqlite3
+*.ldb
+
+# ---------------------------------------------------------------------------
+# QA / local harness artifacts (kept outside the shipped tree)
+# ---------------------------------------------------------------------------
+.qa-lab/
+fixtures/
+evidence/
+.capture/
+scripts/forge-semantic-e2e/.capture/
+
+# ---------------------------------------------------------------------------
+# Build output — the released ZIP is produced by `npm run package`, not committed
+# ---------------------------------------------------------------------------
+dist/
+*.zip
+
+# ---------------------------------------------------------------------------
+# OS / editor clutter
+# ---------------------------------------------------------------------------
+node_modules/
+Thumbs.db
+.DS_Store
+*.log
