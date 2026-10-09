@@ -8,6 +8,7 @@ import { getForgeState, excludeBootstrapEntry } from '../src/forge-lineage.js';
 import { createDraft, createRun, getRun, updateRun, scanDraftPrivacy, buildMigrationReport, formatMigrationReport } from '../src/draft.js';
 import { createWebForgeModel, initialForgeJob, resumeForgeInput } from '../src/web-forge.js';
 import { DEFAULT_CHUNK_CHARS } from '../src/forge.js';
+import { planMigration, snapshotFingerprint } from '../src/plan.js';
 
 const $ = id => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -29,10 +30,8 @@ let prepared = null;          // { session, messages, analysis, forge }
 let completedText = '';       // 完成页「重新复制」用的正文
 let completedForge = null;    // { run, sessionId, session, analysis }：上一次滚动压缩的结果报告
 // 完成页的「本次迁移结果」：本轮真正执行出来的结果（不重新算），迁移完成前存下来。
-let completedMigration = null; // { strategy, sessionId, session, analysis, run: forgeRun|null, inputChars, migrationChars }
+let completedMigration = null; // { strategy, sessionId, session, analysis, run: forgeRun|null, inputChars, migrationChars, incurred }
 let completedReportSnapshot = null; // 完成页「查看完整报告 / 复制测试报告」用的同一份文本
-// 滚动压缩反而更大时挂在这里等用户决定：{ result, forgeRun }，两条路都复用已算出的结果。
-let pendingForgeChoice = null;
 let forgeConfig = null;
 let forgeController = null;
 let reading = false;
@@ -256,7 +255,6 @@ function showCurrent(result) {
   // 同一份会话的滚动压缩结果留着（用户从完成页返回时还要看它）；换了会话就作废。
   if (completedForge && completedForge.sessionId !== result.session.sessionId) completedForge = null;
   if (completedMigration && completedMigration.sessionId !== result.session.sessionId) completedMigration = null;
-  clearForgeChoice();
   const { session, analysis } = result;
   $('sourceLabel').textContent = source.kind === 'history' ? '来自历史会话' : '当前会话';
   $('currentTitle').textContent = session.title || 'DeepSeek 会话';
@@ -284,7 +282,6 @@ function showReadFailure(error) {
   completedForge = null;
   completedMigration = null;
   completedReportSnapshot = null;
-  clearForgeChoice();
   $('sourceLabel').textContent = source.kind === 'history' ? '来自历史会话' : '当前会话';
   $('currentTitle').textContent = source.kind === 'history' ? '这份存档暂时读不出来' : '打开你想迁移的会话';
   $('currentMeta').textContent = '尚未读取到可迁移的对话';
@@ -407,6 +404,7 @@ function renderCompletedReport() {
   $('completedReportBody').hidden = true;
   completedReportSnapshot = null;
   if (!completedMigration) { card.hidden = true; return; }
+  const outcome = migrationOutcome();
 
   const row = (label, value) => {
     const line = el('div', 'report-line');
@@ -432,9 +430,24 @@ function renderCompletedReport() {
     row('方式', '完整原文');
     row('源正文', `${number(completedMigration.analysis.selected.cleanTextChars)} 字符`);
     row('实际迁移', `${number(completedMigration.migrationChars)} 字符`);
+    // 整理后才发现不划算：如实报告已经发生的模型调用/工作会话，不伪装成 0。
+    const inc = completedMigration.incurred;
+    if (inc) {
+      const parts = [inc.provider === 'api' ? 'API 调用' : '网页工作会话'];
+      if (inc.chunks != null) parts.push(`${inc.chunks} 段`);
+      if (inc.workerSessions) parts.push(`${inc.workerSessions} 个工作会话`);
+      row('本次已发生成本', parts.join(' · '));
+    }
     for (const text of ['✓ 未摘要', '✓ 未改写', '✓ 未裁剪正文']) checks.append(el('p', 'report-check', text));
     checks.hidden = false;
-    completedReportSnapshot = fullExactReport();
+    completedReportSnapshot = fullExactReport() + (inc
+      ? `\n\n本次为整理已发生：${inc.provider === 'api' ? 'API 调用' : '网页工作会话'}${inc.chunks != null ? ` · ${inc.chunks} 段` : ''}${inc.workerSessions ? ` · ${inc.workerSessions} 个工作会话` : ''}（压缩不划算，已自动改用完整原文）`
+      : '');
+  }
+  // 本次结果：按本轮真实发生的事给一句话——短会话直发全文 / 滚动压缩 / 压缩不划算回退 / 用户自选全文，各不相同。
+  if (outcome?.note) {
+    row('本次结果', outcome.note);
+    completedReportSnapshot = `${completedReportSnapshot || ''}\n\n本次结果：${outcome.note}`;
   }
   $('completedReportText').textContent = completedReportSnapshot || '';
   card.hidden = false;
@@ -494,7 +507,8 @@ async function runForge(result, signal) {
   });
   // 压缩前 = 本轮真正进入滚动压缩链的 clean 正文（排除上一代迁移正文后）。
   const inputChars = entries.reduce((sum, entry) => sum + countChars(entry.text), 0);
-  return { rolled, packet, inputChars, excludedBootstrap: excluded, carriedContinuity: !!lineage?.continuity };
+  const forgeRun = { rolled, packet, inputChars, excludedBootstrap: excluded, carriedContinuity: !!lineage?.continuity };
+  return { text: packet.packet, forgeRun, metadata: { provider: 'api', chunks: rolled.chunks } };
 }
 
 async function copyCompleted(text) {
@@ -528,7 +542,9 @@ function showSendProgress(label) {
   $('progressLabel').textContent = label;
 }
 
-async function sendMigrationDraft(result, { mode, content, forgeRun = null, metadata = {} }) {
+// 统一发送：exact 与 rolling 共用一条 native 发送链。ASSEMBLED 只是「整理稿可用」，
+// 只有这里发出且收到可确认的结果，才算迁移完成（DONE）。
+async function sendMigrationDraft(result, { mode, content, forgeRun = null, metadata = {}, plan = null, incurred = null }) {
   const draft = await createDraft({ sourceSessionId: result.session.sessionId, mode, content, metadata });
   const run = await createRun({ draftId: draft.draftId, sourceSessionId: result.session.sessionId, mode, transport: 'native-composer' });
   completedDraft = draft;
@@ -537,7 +553,7 @@ async function sendMigrationDraft(result, { mode, content, forgeRun = null, meta
   const sendResult = await chrome.runtime.sendMessage({
     type: 'MIGRATE_SEND', runId: run.runId, draftId: draft.draftId,
     sourceSessionId: result.session.sessionId, mode, content,
-    lineage: forgeRun ? { continuity: forgeRun.rolled?.continuity || null } : null,
+    lineage: forgeRun?.rolled?.continuity ? { continuity: forgeRun.rolled.continuity } : null,
   });
   const freshRun = await getRun(run.runId).catch(() => run);
   completedRun = freshRun || run;
@@ -548,10 +564,33 @@ async function sendMigrationDraft(result, { mode, content, forgeRun = null, meta
     session: result.session,
     analysis: result.analysis,
     run: forgeRun,
+    plan,
+    incurred,
     inputChars: forgeRun ? forgeRun.inputChars : result.analysis.selected.cleanTextChars,
     migrationChars: countChars(content),
   };
+  // Web Forge 收尾：只有发送可确认成功，job 才真正 DONE，随后关闭桥自己创建的工作标签页。
+  if (webForgeJob && webForgeJob.sourceSessionId === result.session.sessionId) {
+    if (sendResult?.outcomeType === 'SUCCESS') {
+      webForgeJob.status = 'done';
+      webForgeJob.sentRunId = completedRun?.runId || null;
+      webForgeJob.pendingRequest = null;
+      await saveWebForgeJob().catch(() => {});
+      chrome.runtime.sendMessage({ type: 'WEB_FORGE_CLOSE', jobId: webForgeJob.jobId }).catch(() => {});
+      webForgeJob = null;
+    } else if (sendResult?.outcomeType === 'UNKNOWN' || sendResult?.outcomeType === 'TRANSPORT_ERROR' || sendResult?.outcomeType === 'NETWORK_ERROR') {
+      // 发送结果不确定：整理稿保留，状态置为待确认，绝不自动重发。
+      webForgeJob.status = sendResult?.outcomeType === 'UNKNOWN' ? 'paused_uncertain' : 'assembled';
+      await saveWebForgeJob().catch(() => {});
+    }
+  }
   routeOutcome(sendResult, { result, draft, mode, forgeRun });
+}
+
+// 统一发送决策：滚动稿和完整原文用同一次快照比较，谁更短发谁。
+// 整理后才发现不划算 → 自动发完整原文，不暂停等用户选择；已发生的成本如实带进报告。
+async function finalizeMigration(result, options) {
+  await sendMigrationDraft(result, options);
 }
 
 function routeOutcome(sendResult, ctx) {
@@ -569,20 +608,55 @@ function routeOutcome(sendResult, ctx) {
   showOutcomeFailure(type, sendResult, ctx);
 }
 
+// 迁移完成后的状态说明：按本轮真实发生的事分别给话——短会话直接发全文、滚动压缩、
+// 压缩不划算回退全文、用户自己选全文，各不一样；不再用一句通用文案糊过去。
+function migrationOutcome() {
+  const m = completedMigration;
+  if (!m) return null;
+  if (m.strategy === 'forge') {
+    return {
+      status: '✓ 已用滚动压缩整理并发送，新会话已建立',
+      note: '较早的对话已整理成持续状态，关键原话与最近完整对话保留原文。',
+    };
+  }
+  if (m.incurred) {
+    return {
+      status: '✓ 已改用完整原文发送（压缩不划算），新会话已建立',
+      note: '这次滚动压缩后并没有更短，已自动改用完整原文发送，未做任何摘要或改写。',
+    };
+  }
+  if (m.plan?.phase === 'pre' && m.plan.reason === 'EXACT_NO_BENEFIT') {
+    return {
+      status: '✓ 已用完整原文发送（会话较短，无需压缩），新会话已建立',
+      note: '最近 20 轮对话已覆盖全部历史，滚动压缩不会更短，因此直接发送完整原文，未做任何摘要或改写。',
+    };
+  }
+  if (m.plan?.phase === 'pre' && m.plan.reason === 'ROLLING_ELIGIBLE') {
+    return {
+      status: '✓ 已用完整原文发送，新会话已建立',
+      note: '按你的选择用完整原文发送，本次没有做滚动压缩。',
+    };
+  }
+  return { status: '✓ 已自动发送，新会话已建立', note: '' };
+}
+
 function renderNativeComplete(ctx, sendResult) {
   const { result, draft, mode } = ctx;
   completedReportSnapshot = null;
   $('completedTitle').textContent = `${result.session.title || '这份会话'} · ${mode === 'rolling' ? '滚动压缩' : '完整原文'}`;
   $('completeHow').textContent = `迁移稿已通过原生输入直接发送（不经剪贴板）。版本 v${draft.revision} · 发出 ${number(sendResult.requestPromptChars ?? draft.chars)} 字符 · 附件引用 0。`;
+  const outcome = migrationOutcome();
   if (sendResult.targetSessionId) {
     $('targetLinkRow').hidden = false;
     $('targetLink').href = `https://chat.deepseek.com/a/chat/s/${sendResult.targetSessionId}`;
     $('targetLink').textContent = '打开接续的新会话';
-    $('openedStatus').textContent = '✓ 已自动发送，新会话已建立';
+    $('openedStatus').textContent = outcome?.status || '✓ 已自动发送，新会话已建立';
   } else {
     $('targetLinkRow').hidden = true;
     $('openedStatus').textContent = '已发送';
   }
+  $('completeNote').textContent = outcome?.note || '';
+  $('completeNote').hidden = !outcome?.note;
   $('openedStatus').dataset.state = 'ok';
   $('openNewSession').hidden = true;
   $('cancelForge').hidden = false;
@@ -894,12 +968,13 @@ async function resendDraft(draft, ctx) {
 }
 
 // rolling TOO_LONG：只允许一次更紧预算重排，不递归。
+// 自持 preparing 并直接调 migrateInternal——不再经由 migrate 的守卫把自己挡在门外。
 async function retryRollingTighter(ctx) {
   if (reading || preparing) return;
   preparing = true;
   setActionsDisabled(true);
   try {
-    const jobKey = `webForgeJob:${ctx.result.session.sessionId}`;
+    const jobKey = webForgeJobKey(ctx.result.session.sessionId);
     const stored = await chrome.storage.local.get(jobKey);
     const job = stored[jobKey];
     if (job) {
@@ -907,32 +982,12 @@ async function retryRollingTighter(ctx) {
       job.status = 'running';
       job.processedMessageIds = []; // 预算变了，整体重排一次（仅一次机会）
       job.continuity = null;
+      job.importantCandidates = [];
+      job.pendingRequest = null;
       await chrome.storage.local.set({ [jobKey]: job });
     }
     hideAllOutcomePages();
-    await migrate(true, 'web');
-  } finally {
-    preparing = false;
-    setActionsDisabled(false);
-  }
-}
-
-// 「不值得压缩」这一关：两条路都用刚刚已经算出来的结果，不重新抓取、不重新调用模型。
-async function resolveForgeChoice(keepForge) {
-  if (!pendingForgeChoice || reading || preparing) return;
-  preparing = true;
-  setActionsDisabled(true);
-  const { result, forgeRun } = pendingForgeChoice;
-  clearForgeChoice();
-  // 改选完整原文后，这次滚动压缩的结果就不该再挂在首页了。
-  if (!keepForge) completedForge = null;
-  try {
-    await sendMigrationDraft(result, keepForge
-      ? { mode: 'rolling', content: forgeRun.packet.packet, forgeRun, metadata: { provider: 'api', chunks: forgeRun.rolled.chunks } }
-      : { mode: 'exact', content: result.forge.fullExact });
-  } catch (error) {
-    recordTechnical('迁移收尾失败', error);
-    showReadFailure(error);
+    await migrateInternal(true, 'web');
   } finally {
     preparing = false;
     setActionsDisabled(false);
@@ -943,55 +998,76 @@ async function resolveForgeChoice(keepForge) {
 async function migrate(useForge, provider = 'api') {
   if (reading || preparing) return;
   preparing = true;
-  clearForgeFailure();
-  clearForgeChoice();
   setActionsDisabled(true);
+  try {
+    await migrateInternal(useForge, provider);
+  } finally {
+    preparing = false;
+    setActionsDisabled(false);
+  }
+}
+
+async function migrateInternal(useForge, provider = 'api') {
+  clearForgeFailure();
   forgeController = new AbortController();
   const signal = forgeController.signal;
   try {
     const result = source.kind === 'history' ? await analysisFor(source.sessionId) : await captureCurrentSession();
     showCurrent(result);
-    if (!useForge) {
-      await sendMigrationDraft(result, { mode: 'exact', content: result.forge.fullExact, metadata: { provider: null } });
+
+    // 整理前预判（纯函数）：先看清来源，再决定要不要花模型调用/工作会话。
+    const lineage = await getForgeState(result.session.sessionId).catch(() => null);
+    const pre = planMigration({
+      phase: 'pre',
+      requestedProvider: provider,
+      apiConfigured: !!forgeConfig,
+      session: result.session,
+      analysis: result.analysis,
+      fullExactChars: countChars(result.forge.fullExact),
+      recentTurns: RECENT_TURNS,
+      fingerprint: snapshotFingerprint({
+        sessionId: result.session.sessionId,
+        entries: result.analysis.entries,
+        lineageSourceId: lineage?.sourceSessionId || '',
+      }),
+    });
+    if (pre.action === 'blocked') {
+      showForgeFailure('需要先在「设置」里配置 DeepSeek API Key，滚动压缩（API）才能整理对话。桥不会擅自改用网页版。');
+      return;
+    }
+    // 明确不划算（或用户本就要完整原文）：零模型调用、零工作会话，直接完整原文迁移。
+    if (!useForge || pre.action === 'exact') {
+      await finalizeMigration(result, {
+        plan: pre, mode: 'exact', content: result.forge.fullExact,
+        forgeRun: null, metadata: { provider: null },
+      });
       return;
     }
 
+    // 正常滚动整理。
     showProgress();
     $('cancelForge').hidden = false;
-    if (provider === 'web') {
-      const run = await runWebForgeMigration(result, signal);
-      completedForge = { run: run.forgeRun, sessionId: result.session.sessionId, session: result.session, analysis: result.analysis };
-      renderRollingResult();
-      const rollingChars = countChars(run.text);
-      const fullChars = countChars(result.forge.fullExact);
-      if (rollingChars >= fullChars) {
-        hideProgress();
-        pendingForgeChoice = { result, forgeRun: run.forgeRun };
-        showForgeChoice(rollingChars, fullChars);
-        return;
-      }
-      $('progressBar').style.width = '96%';
-      $('progressLabel').textContent = '正在发送接续稿…';
-      await sendMigrationDraft(result, { mode: 'rolling', content: run.text, forgeRun: run.forgeRun, metadata: run.metadata });
-      return;
-    }
-
-    if (!forgeConfig) { say('请先在「设置」里配置滚动压缩模型，或改用免费网页版。', 'err'); hideProgress(); return; }
-    const forgeRun = await runForge(result, signal);
-    $('progressBar').style.width = '100%';
-    $('progressLabel').textContent = '正在发送接续稿…';
-    completedForge = { run: forgeRun, sessionId: result.session.sessionId, session: result.session, analysis: result.analysis };
+    const run = provider === 'web'
+      ? await runWebForgeMigration(result, signal)
+      : await runForge(result, signal);
+    completedForge = { run: run.forgeRun, sessionId: result.session.sessionId, session: result.session, analysis: result.analysis };
     renderRollingResult();
-    // 产品层保护：这个窗口太短时 Recent Exact 会覆盖整个会话，滚动整理反而更大——不直接迁，先让用户看到。
-    const rollingChars = countChars(forgeRun.packet.packet);
-    const fullChars = countChars(result.forge.fullExact);
-    if (rollingChars >= fullChars) {
-      hideProgress();
-      pendingForgeChoice = { result, forgeRun };
-      showForgeChoice(rollingChars, fullChars);
-      return;
-    }
-    await sendMigrationDraft(result, { mode: 'rolling', content: forgeRun.packet.packet, forgeRun, metadata: { provider: 'api', chunks: forgeRun.rolled.chunks } });
+    // 整理后统一决策：谁更短发谁；不划算自动发完整原文，不暂停等用户选择。
+    const post = planMigration({
+      phase: 'post', requestedProvider: provider,
+      fullExactChars: countChars(result.forge.fullExact), rollingChars: countChars(run.text),
+    });
+    const useRolling = post.action === 'send-rolling';
+    $('progressBar').style.width = '96%';
+    $('progressLabel').textContent = useRolling ? '正在发送接续稿…' : '这次压缩不划算，改用完整原文发送…';
+    await finalizeMigration(result, {
+      plan: post,
+      mode: useRolling ? 'rolling' : 'exact',
+      content: useRolling ? run.text : result.forge.fullExact,
+      forgeRun: run.forgeRun,
+      metadata: useRolling ? run.metadata : { provider: null },
+      incurred: { provider, chunks: run.forgeRun?.rolled?.chunks ?? null, workerSessions: run.metadata?.workerSessions ?? null },
+    });
   } catch (error) {
     if (error?.name === 'AbortError') {
       hideProgress();
@@ -1002,9 +1078,7 @@ async function migrate(useForge, provider = 'api') {
       showReadFailure(error);
     }
   } finally {
-    preparing = false;
     forgeController = null;
-    setActionsDisabled(false);
   }
 }
 
@@ -1024,6 +1098,16 @@ async function handleForgeRunError(error, provider) {
       showForgeFailure('整理请求过于频繁，已暂停。进度已保存，稍后点「重试滚动压缩」会从断点继续。');
       return;
     }
+    if (cls === 'UNCERTAIN_SEND') {
+      webForgeJob.status = 'paused_uncertain';
+      await saveWebForgeJob().catch(() => {});
+      showForgeFailure(`${error.message} 为免重复整理或重复发送，桥已暂停。请确认新会话的实际状态后再决定：可点「重试滚动压缩」从断点继续，或改用完整原文迁移。`);
+      return;
+    }
+    if (cls === 'SOURCE_CHANGED') {
+      showForgeFailure(`${error.message}`);
+      return;
+    }
   }
   recordTechnical('Forge 失败', error);
   showForgeFailure(forgeErrorMessage(error));
@@ -1033,6 +1117,14 @@ async function handleForgeRunError(error, provider) {
 let webForgeJob = null;
 
 const webForgeJobKey = sessionId => `webForgeJob:${sessionId}`;
+
+// 请求指纹：只对「本块消息 id 序列」做一次本地哈希，判断在途请求是否就是这块，不存正文。
+function promptFingerprint(payload) {
+  const source = JSON.stringify((payload?.messages || []).map(m => m.messageId));
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < source.length; i++) { hash ^= source.charCodeAt(i); hash = Math.imul(hash, 0x01000193) >>> 0; }
+  return `${payload?.chunk_index ?? 0}:${(hash >>> 0).toString(16)}`;
+}
 
 async function loadWebForgeJob(sessionId) {
   const stored = await chrome.storage.local.get(webForgeJobKey(sessionId));
@@ -1045,22 +1137,84 @@ async function saveWebForgeJob() {
   await chrome.storage.local.set({ [webForgeJobKey(webForgeJob.sourceSessionId)]: webForgeJob });
 }
 
+// 已整理但尚未发送（含 v0.4.1 旧语义的 done）：直接复用已有 continuity + Important，零模型调用重建接续稿。
+async function reuseAssembledWebForge(result, job, entries, excluded, lineage, fingerprint) {
+  job.status = 'assembled';
+  job.snapshotFingerprint = job.snapshotFingerprint || fingerprint;
+  await saveWebForgeJob();
+  const packet = assembleForgePacket({
+    session: result.session, analysis: result.analysis,
+    continuity: job.continuity, importantMessageIds: job.importantMessageIds || [],
+    recentTurns: RECENT_TURNS, fullExactChars: countChars(result.forge.fullExact),
+  });
+  const inputChars = entries.reduce((sum, entry) => sum + countChars(entry.text), 0);
+  return {
+    text: packet.packet,
+    forgeRun: {
+      rolled: { chunks: job.chunkIndex || 0, reused: true },
+      packet, inputChars, excludedBootstrap: excluded,
+      carriedContinuity: !!lineage?.continuity, reused: true,
+    },
+    metadata: { provider: 'web', chunks: job.chunkIndex || null, workerSessions: job.workerSessions?.length || null },
+  };
+}
+
 async function runWebForgeMigration(result, signal) {
   const lineage = await getForgeState(result.session.sessionId);
   const { entries, excluded } = excludeBootstrapEntry(result.analysis.entries, lineage?.bootstrapMessageId);
+  const fingerprint = snapshotFingerprint({
+    sessionId: result.session.sessionId, entries: result.analysis.entries,
+    lineageSourceId: lineage?.sourceSessionId || '',
+  });
   webForgeJob = await loadWebForgeJob(result.session.sessionId);
-  const resumed = !!webForgeJob && ['paused_filter', 'paused_rate_limit', 'running'].includes(webForgeJob.status) && webForgeJob.processedMessageIds?.length;
-  if (!webForgeJob || webForgeJob.status === 'done') {
-    webForgeJob = initialForgeJob({ sourceSessionId: result.session.sessionId, chunkChars: DEFAULT_CHUNK_CHARS });
+
+  // 旧 checkpoint（v0.4.1 status:'done' = 「整理结束」）：当作 assembled 复用，绝不重新收费。
+  const legacyDone = webForgeJob?.status === 'done' && !webForgeJob.sentRunId;
+  if ((webForgeJob?.status === 'assembled' || legacyDone) && webForgeJob.continuity) {
+    if (legacyDone) recordTechnical('检测到 v0.4.1 旧 checkpoint，按已整理复用');
+    return reuseAssembledWebForge(result, webForgeJob, entries, excluded, lineage, fingerprint);
+  }
+  // 发送结果不确定：不自动重跑，也不自动重发。
+  if (webForgeJob?.status === 'paused_uncertain') {
+    const err = new Error('上一次整理结束后的发送结果无法确认。');
+    err.errorClass = 'UNCERTAIN_SEND';
+    throw err;
+  }
+  // 在途请求已发出但结果未落盘：先核查，无法确认则暂停，绝不盲目重发。
+  if (webForgeJob?.pendingRequest?.stage === 'sent') {
+    webForgeJob.status = 'paused_uncertain';
+    await saveWebForgeJob();
+    const err = new Error('上一个整理请求已经发出，但结果没有落盘。');
+    err.errorClass = 'UNCERTAIN_SEND';
+    throw err;
+  }
+  // 来源快照变化：不悄悄把新旧历史混在一起。
+  if (webForgeJob?.snapshotFingerprint && webForgeJob.snapshotFingerprint !== fingerprint) {
+    const err = new Error('这个会话在你上次整理之后又有了变化。为避免把新旧历史混在一起，请重新整理，或改用完整原文迁移。');
+    err.errorClass = 'SOURCE_CHANGED';
+    throw err;
+  }
+
+  const resumable = webForgeJob && ['paused_filter', 'paused_rate_limit', 'running', 'sending'].includes(webForgeJob.status)
+    && (webForgeJob.processedMessageIds?.length || webForgeJob.continuity);
+  if (!webForgeJob || !resumable) {
+    webForgeJob = initialForgeJob({ sourceSessionId: result.session.sessionId, chunkChars: DEFAULT_CHUNK_CHARS, snapshotFingerprint: fingerprint });
   } else {
     webForgeJob.status = 'running';
+    webForgeJob.snapshotFingerprint = webForgeJob.snapshotFingerprint || fingerprint;
   }
   await saveWebForgeJob();
-  if (resumed) $('progressLabel').textContent = `继续上次整理（已完成 ${webForgeJob.chunkIndex || 0} 段）…`;
+  if (webForgeJob.chunkIndex) $('progressLabel').textContent = `继续上次整理（已完成 ${webForgeJob.chunkIndex} 段）…`;
 
-  const { remaining, previousContinuity, resumedFromChunk } = resumeForgeInput(webForgeJob, entries);
+  const { remaining, previousContinuity, previousCandidates, resumedFromChunk } = resumeForgeInput(webForgeJob, entries);
   const call = async ({ task, payload }) => {
     if (signal.aborted) { const err = new Error('已取消'); err.name = 'AbortError'; throw err; }
+    // 发请求之前先把在途标记落盘：后台/浏览器重启后可据此判断结果是否已落盘，绝不盲目重发。
+    webForgeJob.pendingRequest = {
+      chunkIndex: payload?.chunk_index ?? null, task: task || 'roll',
+      promptFingerprint: promptFingerprint(payload), stage: 'sent', at: Date.now(),
+    };
+    await saveWebForgeJob();
     const res = await chrome.runtime.sendMessage({ type: 'WEB_FORGE_CALL', jobId: webForgeJob.jobId, payload });
     if (res?.ok && res.workerSessionId) {
       if (!webForgeJob.workerSessions.some(w => w.sessionId === res.workerSessionId)) {
@@ -1074,7 +1228,9 @@ async function runWebForgeMigration(result, signal) {
     webForgeJob.chunkIndex = resumedFromChunk + info.chunkIndex;
     webForgeJob.chunkCount = resumedFromChunk + info.chunkCount;
     webForgeJob.continuity = info.continuity;
+    webForgeJob.importantCandidates = info.importantCandidates || [];
     webForgeJob.processedMessageIds = [...new Set([...(webForgeJob.processedMessageIds || []), ...info.processedMessageIds])];
+    webForgeJob.pendingRequest = null; // 本块结果已落盘，在途标记可以清掉
     await saveWebForgeJob();
     $('progressLabel').textContent = `正在整理第 ${webForgeJob.chunkIndex} / ${webForgeJob.chunkCount} 段 · 进度已保存`;
     $('progressBar').style.width = `${Math.min(88, Math.round((webForgeJob.chunkIndex / Math.max(webForgeJob.chunkCount, 1)) * 80))}%`;
@@ -1084,7 +1240,10 @@ async function runWebForgeMigration(result, signal) {
   // NETWORK_ERROR：同一 chunk 原样重试（checkpoint 保证只重做失败块），最多 3 次。
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      rolled = await rollupForge({ entries: remaining, previousContinuity, model, chunkChars: webForgeJob.chunkChars, onChunk });
+      rolled = await rollupForge({
+        entries: remaining, previousContinuity, previousCandidates,
+        candidateIndexOffset: resumedFromChunk, model, chunkChars: webForgeJob.chunkChars, onChunk,
+      });
       break;
     } catch (error) {
       if (error?.name === 'AbortError' || error?.errorClass !== 'NETWORK_ERROR' || attempt === 3) throw error;
@@ -1093,7 +1252,9 @@ async function runWebForgeMigration(result, signal) {
     }
   }
   webForgeJob.importantMessageIds = rolled.importantMessageIds;
-  webForgeJob.status = 'done';
+  webForgeJob.importantCandidates = rolled.candidates || webForgeJob.importantCandidates;
+  webForgeJob.pendingRequest = null;
+  webForgeJob.status = 'assembled'; // 整理结束 ≠ 迁移完成；DONE 只在原生发送可确认成功后成立
   await saveWebForgeJob();
 
   const packet = assembleForgePacket({
@@ -1112,21 +1273,6 @@ async function runWebForgeMigration(result, signal) {
   };
 }
 
-function showForgeChoice(rollingChars, fullChars) {
-  const extra = fullChars > 0 ? (rollingChars / fullChars - 1) * 100 : null;
-  $('notHelpfulFull').textContent = `${number(fullChars)} 字符`;
-  $('notHelpfulRolling').textContent = `${number(rollingChars)} 字符`;
-  $('notHelpfulExtraRow').hidden = extra == null;
-  $('notHelpfulExtra').textContent = extra == null ? '' : `约 ${extra.toFixed(1)}%`;
-  $('rollingResult').hidden = true;
-  $('forgeNotHelpful').hidden = false;
-}
-
-function clearForgeChoice() {
-  pendingForgeChoice = null;
-  $('forgeNotHelpful').hidden = true;
-}
-
 // chrome.permissions.request 必须带着点击手势同步发起；先 await 一次就丢掉手势。
 // 已授权时 request 会立刻返回 true 且不弹窗，所以直接 request 比先 contains 更稳。
 function apiPermission() {
@@ -1137,7 +1283,19 @@ $('migrateCurrent').onclick = () => {
   const useForge = strategyValue() === 'forge';
   const provider = providerValue();
   if (useForge && provider === 'api' && !forgeConfig) { say('请先在「设置」里配置 API Key，或改用免费网页版。', 'err'); return; }
-  const gate = useForge && provider === 'api' ? apiPermission() : Promise.resolve(true);
+  // 权限手势必须同步发起。先用已准备好的来源快速预判：明确不划算（不会调用 API）就不申请权限。
+  let needsApi = useForge && provider === 'api';
+  if (needsApi && prepared) {
+    try {
+      const pre = planMigration({
+        phase: 'pre', requestedProvider: 'api', apiConfigured: true,
+        session: prepared.session, analysis: prepared.analysis,
+        fullExactChars: countChars(prepared.forge.fullExact), recentTurns: RECENT_TURNS,
+      });
+      if (pre.action === 'exact') needsApi = false;
+    } catch { /* 预判失败就照常申请权限 */ }
+  }
+  const gate = needsApi ? apiPermission() : Promise.resolve(true);
   gate.then(allowed => {
     if (allowed) return migrate(useForge, provider);
     showForgeFailure('需要允许访问 api.deepseek.com，滚动压缩才能整理对话。');
@@ -1163,8 +1321,6 @@ $('fallbackFull').onclick = () => {
   updateStrategyUi();
   migrate(false);
 };
-$('notHelpfulUseFull').onclick = () => resolveForgeChoice(false);
-$('notHelpfulKeepForge').onclick = () => resolveForgeChoice(true);
 $('cancelForge').onclick = () => forgeController?.abort();
 $('completedReportToggle').onclick = () => {
   const expanding = $('completedReportToggle').getAttribute('aria-expanded') !== 'true';

@@ -97,11 +97,12 @@ export async function testConnection(config) {
 
 const ROLL_SYSTEM = [
   '你在维护一份跨窗口延续用的「持续状态」。这是状态更新，不是摘要。',
-  '只输出 JSON：{"continuity": {"identity": [...], "stableFacts": [...], "activeThreads": [...], "decisions": [...], "openLoops": [...], "recentChanges": [...], "interactionPreferences": [...]}}。',
+  '只输出 JSON：{"continuity": {"identity": [...], "stableFacts": [...], "activeThreads": [...], "decisions": [...], "openLoops": [...], "recentChanges": [...], "interactionPreferences": [...]}, "important_message_ids": [...]}。',
   '每个字段是数组，每条形如 {"state": "一句话状态", "source_message_ids": ["消息id"]}。',
   '必须就地更新、取代、解决或作废已有条目，而不是每块都追加新条目；语义重复的条目合并，source_message_ids 取并集。',
   '新条目只能引用给的 previous_continuity 或本块 messages 里真实存在的 id，不得凭空捏造。',
   '不要写普通摘要，不要按时间顺序复述对话，不要把猜测写成事实。',
+  '另外，在本块里挑出最多 2 条最值得逐字保留的消息，放进同一份 JSON 的 "important_message_ids"（只能给本块真实存在的 id，宁少勿多，可以给 0 条）。',
 ].join('\n');
 
 const IMPORTANT_SYSTEM = [

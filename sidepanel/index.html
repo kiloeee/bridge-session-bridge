@@ -68,16 +68,6 @@
             <button id="copyRollingReport" class="text-button" type="button">复制测试报告</button>
           </div>
 
-          <div id="forgeNotHelpful" class="report-card" hidden>
-            <p class="report-heading">这个会话还不需要滚动压缩</p>
-            <div class="report-line"><span>完整原文</span><strong id="notHelpfulFull">—</strong></div>
-            <div class="report-line"><span>滚动整理后</span><strong id="notHelpfulRolling">—</strong></div>
-            <div class="report-line" id="notHelpfulExtraRow"><span>本次反而增加</span><strong id="notHelpfulExtra">—</strong></div>
-            <p class="muted">最近对话已经覆盖了整个会话，滚动整理暂时不会节省上下文。</p>
-            <button id="notHelpfulUseFull" class="primary-button" type="button">使用完整原文迁移</button>
-            <button id="notHelpfulKeepForge" class="text-button" type="button">仍使用滚动压缩</button>
-          </div>
-
           <p id="forgeFailure" class="inline-hint" role="status" hidden></p>
           <div id="forgeFailureActions" class="utility-row" hidden>
             <button id="retryForge" class="secondary-button" type="button">重试滚动压缩</button>
@@ -98,6 +88,7 @@
           <img class="success-whale" src="./assets/whale-success.png" alt="" />
           <h2>迁移完成</h2><p id="completedTitle" class="muted"></p>
           <div class="check-list" aria-live="polite"><p id="copiedStatus"></p><p id="openedStatus"></p></div>
+          <p id="completeNote" class="completion-note" hidden></p>
           <p id="completeHow" class="explanation">迁移内容已通过原生输入直接发送到新会话，不经剪贴板。</p>
           <p id="targetLinkRow" hidden><a id="targetLink" target="_blank" rel="noreferrer">打开新会话</a></p>
           <div id="completedReportCard" class="report-card" hidden>

@@ -1,4 +1,4 @@
-# 安装与更新 · 桥 · Session Bridge v0.4.1
+# 安装与更新 · 桥 · Session Bridge v0.4.2
 
 本页面向**普通用户**。看完就能装好、能用、能更新。
 
@@ -19,30 +19,30 @@
 
 1. 打开本仓库的 **Releases** 页面：
    `https://github.com/kiloeee/bridge-session-bridge/releases`
-2. 在 **Assets** 下面下载 **`bridge-v0.4.1-edge.zip`**。
+2. 在 **Assets** 下面下载 **`bridge-v0.4.2-edge.zip`**。
    - **不要**下载 GitHub 自动生成的「Source code (zip)」。那个是源码，不能安装。
 3. 把 ZIP **解压到一个你会长期保留的固定文件夹**。
-   - 例如 `D:\bridge-v0.4.1\`。
+   - 例如 `D:\bridge-v0.4.2\`。
    - 解压后该文件夹里应能直接看到 `manifest.json`。
 4. 在 Edge 地址栏输入 `edge://extensions` 并回车。
 5. 打开左下角的 **开发人员模式**。
 6. 点 **加载解压缩的扩展**，选择第 3 步那个**含 `manifest.json` 的文件夹**。
 7. 打开 `https://chat.deepseek.com/`，点浏览器工具栏里的扩展图标，打开侧边栏。
 
-完成后扩展卡片上应显示 **桥 · Session Bridge**，版本 **0.4.1**。
+完成后扩展卡片上应显示 **桥 · Session Bridge**，版本 **0.4.2**。
 
 ### 核对下载是否完整
 
-`bridge-v0.4.1-edge.zip` 的 SHA-256：
+`bridge-v0.4.2-edge.zip` 的 SHA-256：
 
 ```
-f5d09022f28efd42e8bb664f494cf3a3f2df3540212baf800c9f3f7a06058adb
+489008dae40751c00ee0f59176b7078e80ad5388418cf7dacdf65426c50c89d0
 ```
 
 Windows 上核对方法（在存放 ZIP 的文件夹打开 PowerShell）：
 
 ```powershell
-Get-FileHash .\bridge-v0.4.1-edge.zip -Algorithm SHA256
+Get-FileHash .\bridge-v0.4.2-edge.zip -Algorithm SHA256
 ```
 
 输出与上面一致即可。

@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import {
   CONTINUITY_FIELDS, emptyContinuity, validateContinuity, sanitizeContinuity, chunkEntries,
   importantExact, rollupForge, buildForgePacket, forgeStats, assembleForgePacket,
-  dedupeContinuity, boundContinuity, recentMessageIds, excludeRecentFromImportant,
+  dedupeContinuity, boundContinuity, recentMessageIds, excludeRecentFromImportant, selectImportantCandidates,
   FORGE_UPDATER_CONTRACT, FORGE_IMPORTANT_CONTRACT, FIELD_RETENTION, DEFAULT_CHUNK_CHARS, DEFAULT_MAX_ITEMS_PER_FIELD,
+  DEFAULT_MAX_IMPORTANT, MAX_ROLL_IMPORTANT_IDS,
 } from './src/forge.js';
 import { analyzeCapacity, messagesForSnapshot, countChars } from './src/phase0.js';
 import { normalizeMessages, normalizeSession } from './src/normalize.js';
@@ -28,14 +29,14 @@ const entries = (from, to) => {
 function scriptedModel(log, { bogusOnChunk = 0, importantIds = null, tag = '' } = {}) {
   return async request => {
     log.push(request);
-    if (request.task === 'roll') {
-      const next = Object.fromEntries(KEYS.map(key =>
-        [key, request.previous_continuity[key].map(item => ({ state: item.state, source_message_ids: [...item.source_message_ids] }))]));
-      next.activeThreads.push({ state: `${tag}第 ${request.chunk_index} 块`, source_message_ids: [request.messages[0].messageId] });
-      if (bogusOnChunk === request.chunk_index) next.activeThreads.push({ state: '幻觉来源', source_message_ids: ['ghost-999'] });
-      return { continuity: next };
-    }
-    return { important_message_ids: importantIds ?? [request.messages.at(-1).messageId] };
+    if (request.task !== 'roll') throw new Error(`scriptedModel 只应收到 roll 请求，收到：${request.task}`);
+    const next = Object.fromEntries(KEYS.map(key =>
+      [key, request.previous_continuity[key].map(item => ({ state: item.state, source_message_ids: [...item.source_message_ids] }))]));
+    next.activeThreads.push({ state: `${tag}第 ${request.chunk_index} 块`, source_message_ids: [request.messages[0].messageId] });
+    if (bogusOnChunk === request.chunk_index) next.activeThreads.push({ state: '幻觉来源', source_message_ids: ['ghost-999'] });
+    // 重要候选现在由每轮 roll 顺带返回，默认取本块最后一条；正文永远由程序从 archive 读。
+    const ids = typeof importantIds === 'function' ? importantIds(request) : importantIds;
+    return { continuity: next, important_message_ids: ids ?? [request.messages.at(-1).messageId] };
   };
 }
 
@@ -85,6 +86,40 @@ function scriptedModel(log, { bogusOnChunk = 0, importantIds = null, tag = '' } 
   console.log('PASS important exact：正文来自 canonical entries，模型不可改写，未知 id 被拒');
 }
 
+// —— important 选择：零模型调用、引用优先、分块轮转、有界、允许不足 12 条 ——
+{
+  const all = entries(1, 30); // 60 条，id 1..60
+  const entryIdSet = new Set(all.map(entry => String(entry.messageId)));
+  const candidates = [];
+  for (let chunk = 1; chunk <= 10; chunk++) {
+    candidates.push({ id: String(chunk * 6 - 3), chunkIndex: chunk }); // 3,9,15,…,57
+    candidates.push({ id: String(chunk * 6), chunkIndex: chunk });     // 6,12,…,60
+  }
+  candidates.push({ id: 'ghost-1', chunkIndex: 1 }, { id: '3', chunkIndex: 1 }); // 幻觉 id + 重复 id
+
+  // 1) 有界 + 去重 + 只认真实 id
+  const full = selectImportantCandidates(candidates, { continuity: emptyContinuity(), entries: all, maxImportant: 12 });
+  assert.equal(full.length, 12, '池 20 条、上限 12 → 恰好 12（不因池大而超限）');
+  assert(full.every(id => entryIdSet.has(id)), '不存在的 id 被剔除');
+  assert.equal(new Set(full).size, 12, '重复候选去重');
+
+  // 2) 分块轮转：不偏向最早历史（slice(0,12) 会吃掉前 6 块、晚段一条不取）
+  assert(full.filter(id => Number(id) > 30).length >= 5, `轮转保证晚段候选也入选（晚段 ${full.filter(id => Number(id) > 30).length}/12）`);
+
+  // 3) 引用优先：Continuity 引用到的候选，即使按轮转轮不到也必选
+  const refContinuity = validateContinuity({ activeThreads: [{ state: '持续状态', source_message_ids: [60] }] });
+  const noRef3 = selectImportantCandidates(candidates, { continuity: emptyContinuity(), entries: all, maxImportant: 3 });
+  const ref3 = selectImportantCandidates(candidates, { continuity: refContinuity, entries: all, maxImportant: 3 });
+  assert.equal(noRef3.includes('60'), false, '无引用时轮转只取到前三块');
+  assert(ref3.includes('60'), 'Continuity 引用的候选被优先保留');
+  assert.deepEqual(ref3, ['3', '9', '60'], '引用优先 + 轮转填充，输出仍按原文时间顺序');
+
+  // 4) 候选不足 12：允许更少，绝不强制凑数
+  const few = selectImportantCandidates([{ id: '5', chunkIndex: 1 }, { id: '7', chunkIndex: 1 }], { continuity: emptyContinuity(), entries: all, maxImportant: 12 });
+  assert.deepEqual(few, ['5', '7'], '只有 2 条候选就只给 2 条');
+  console.log('PASS important 选择：零模型调用、引用优先、分块轮转（不偏向最早）、有界、允许不足 12 条');
+}
+
 // —— rolling：每轮只消费 previous state + 当前 chunk ——
 {
   const all = entries(1, 5);
@@ -101,8 +136,12 @@ function scriptedModel(log, { bogusOnChunk = 0, importantIds = null, tag = '' } 
   assert.equal(result.continuity.activeThreads.length, 5, '注入的幻觉条目被剔除，其余保留');
   assert(result.diagnostics.rejectedSourceIds.includes('ghost-999'));
   assert.equal(result.diagnostics.droppedItems, 1);
-  assert.deepEqual(result.importantMessageIds, ['10']);
-  console.log('PASS rolling：State[n+1]=update(State[n],Chunk[n])，模型只见 previous state + 当前 chunk');
+  // 每块顺带返回本块最后一条 id（2/4/6/8/10），全部进候选池；无 Continuity 引用，轮转全部取到。
+  assert.deepEqual(result.importantMessageIds, ['2', '4', '6', '8', '10']);
+  assert.equal(result.diagnostics.importantPoolSize, 5);
+  assert.equal(result.diagnostics.importantFromRoll, 5);
+  assert.equal(log.filter(call => call.task === 'important').length, 0, '全程没有最终 important 模型调用');
+  console.log('PASS rolling：State[n+1]=update(State[n],Chunk[n])，模型只见 previous state + 当前 chunk；重要 id 顺带收集');
 }
 
 // —— generational：previous continuity + 新 Session，只处理新历史 ——
@@ -173,7 +212,7 @@ function scriptedModel(log, { bogusOnChunk = 0, importantIds = null, tag = '' } 
   const log = [];
   const result = await rollupForge({ entries: all, model: scriptedModel(log), chunkChars: 2000 });
   assert.equal(result.chunks, log.filter(call => call.task === 'roll').length);
-  assert.equal(result.importantMessageIds.length, 1);
+  assert.equal(result.importantMessageIds.length, Math.min(result.diagnostics.importantPoolSize, DEFAULT_MAX_IMPORTANT));
   assert(countChars(buildForgePacket({ continuity: result.continuity, importantExact: result.importantExact, recentExact: 'x' })) > 0);
   console.log(`PASS 200-turn fixture：${all.length} entries / ${chunks.length} chunks，顺序无损、可组装`);
 }
@@ -282,10 +321,10 @@ function scriptedModel(log, { bogusOnChunk = 0, importantIds = null, tag = '' } 
   const log = [];
   await rollupForge({ entries: entries(1, 2), model: scriptedModel(log), chunkChars: 5 });
   assert.equal(log.find(call => call.task === 'roll').contract, FORGE_UPDATER_CONTRACT, '每轮 roll 请求都带同一份合同');
-  assert.equal(log.find(call => call.task === 'important').contract, FORGE_IMPORTANT_CONTRACT);
+  assert.equal(log.filter(call => call.task === 'important').length, 0, '重要原文选择不再需要任何模型调用');
   const text = [...FORGE_UPDATER_CONTRACT.required, ...FORGE_UPDATER_CONTRACT.forbidden].join(' ');
   for (const must of ['取代', '解决', '作废', '合并', '保留', '追加', '摘要', '推断']) assert(text.includes(must), `合同必须明确「${must}」`);
-  console.log('AUDIT contract：roll / important 请求携带统一冻结合同；禁止 append-summary、要求 supersede/resolve/stale-removal');
+  console.log('AUDIT contract：roll 请求携带统一冻结合同；禁止 append-summary、要求 supersede/resolve/stale-removal；重要选择零模型调用');
 }
 
 // —— dedupe + bound 单元行为 ——

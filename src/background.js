@@ -247,6 +247,19 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
     return true;
   }
 
+  if (msg.type === 'WEB_FORGE_CLOSE') {
+    closeWebForgeJob(msg.jobId).then(() => respond({ ok: true })).catch(err => respond({ ok: false, error: String(err.message || err) }));
+    return true;
+  }
+
+  if (msg.type === 'WEB_FORGE_STATUS') {
+    hydrateWorkers().then(() => {
+      const job = webForgeJobs.get(msg.jobId);
+      respond({ ok: true, worker: job ? { tabId: job.tabId ?? null, workerSessionId: job.workerSessionId ?? null, workerChars: job.workerChars || 0, phase: job.phase || null } : null });
+    }).catch(err => respond({ ok: false, error: String(err.message || err) }));
+    return true;
+  }
+
   return false;
 });
 
@@ -282,7 +295,11 @@ function removeWatcher(tabId, fn) {
 
 chrome.tabs.onRemoved.addListener(tabId => {
   streamWatchers.delete(tabId);
-  for (const [jobId, job] of webForgeJobs) if (job.tabId === tabId) webForgeJobs.delete(jobId);
+  let changed = false;
+  for (const [jobId, job] of webForgeJobs) {
+    if (job.tabId === tabId) { job.tabId = null; job.workerSessionId = null; job.workerChars = 0; changed = true; }
+  }
+  if (changed) persistWorkers();
 });
 
 function terminalTimeoutMs(chars) {
@@ -436,8 +453,10 @@ async function migrateSend({ runId, draftId, sourceSessionId, mode, content, lin
     },
   };
   if (runId) await updateRun(runId, statusPatch).catch(() => {});
-  // 滚动压缩成功才登记代际（与 v0.3 语义一致：完整原文不继承）。
-  if (mode === 'rolling' && result.ok && result.tabId != null && lineage?.continuity) {
+  // 只要这一轮真的算出了持续状态就登记代际——包括「整理完成但自动回退完整原文发送」的情形。
+  // 这样下一代滚动压缩仍能接上这一代的状态，重要历史不会因中间那次回退 exact 而断链。
+  // 用户主动选择的纯完整原文迁移不带 continuity（forgeRun 为 null），因此仍不建立代际。
+  if (result.ok && result.tabId != null && lineage?.continuity) {
     await armPendingMigration(result.tabId, { sourceSessionId, continuity: lineage.continuity })
       .catch(err => note(d => d.errors.push(`登记代际失败: ${String(err.message || err).slice(0, 80)}`)));
   }
@@ -457,41 +476,101 @@ async function migrateSend({ runId, draftId, sourceSessionId, mode, content, lin
 // 串行执行（job.busy 锁），绝不并发轰炸。
 // ════════════════════════════════════════════════════════════════════════════
 
-const webForgeJobs = new Map(); // jobId -> { tabId, workerSessionId, workerChars, busy }
+const webForgeJobs = new Map(); // jobId -> { tabId, workerSessionId, workerChars, busy, phase }；busy 只活内存
+const WORKERS_KEY = 'webForgeWorkers';
 const WORKER_ROTATE_CHARS = 150000;
+let workersHydrated = false;
+
+// worker 标签页注册表持久化到 storage.session：SW 重启后仍能对账复用，不再产生孤儿 tab。
+// 标签页本身不跨浏览器重启存活，所以这里不放 storage.local；durable 的整理进度在
+// sidepanel 的 job checkpoint（storage.local）里，两者分工明确。
+async function hydrateWorkers() {
+  if (workersHydrated) return;
+  workersHydrated = true;
+  const stored = await chrome.storage.session.get(WORKERS_KEY).catch(() => ({}));
+  for (const [jobId, entry] of Object.entries(stored[WORKERS_KEY] || {})) {
+    webForgeJobs.set(jobId, {
+      tabId: entry.tabId ?? null, workerSessionId: entry.workerSessionId ?? null,
+      workerChars: entry.workerChars || 0, phase: entry.phase || null, busy: false,
+    });
+  }
+}
+
+function persistWorkers() {
+  const snapshot = {};
+  for (const [jobId, job] of webForgeJobs) {
+    snapshot[jobId] = {
+      tabId: job.tabId ?? null, workerSessionId: job.workerSessionId ?? null,
+      workerChars: job.workerChars || 0, phase: job.phase || null, updatedAt: Date.now(),
+    };
+  }
+  chrome.storage.session.set({ [WORKERS_KEY]: snapshot }).catch(() => {});
+}
+
+// SW 重启后对账：登记过的 tab 若已不存在就清空，存在则复用（绝不重复新建）。
+async function reconcileWorker(job) {
+  if (job.tabId == null) return job;
+  try { await chrome.tabs.get(job.tabId); }
+  catch { job.tabId = null; job.workerSessionId = null; job.workerChars = 0; persistWorkers(); }
+  return job;
+}
 
 async function resetWebForgeJob(jobId) {
   webForgeJobs.delete(jobId);
+  persistWorkers();
+}
+
+// 收尾：关闭由桥创建、且不再使用的工作标签页。绝不触碰用户的来源会话或云端历史。
+async function closeWebForgeJob(jobId) {
+  const job = webForgeJobs.get(jobId);
+  if (job?.tabId != null) { try { await chrome.tabs.remove(job.tabId); } catch { /* 已关闭 */ } }
+  webForgeJobs.delete(jobId);
+  persistWorkers();
 }
 
 async function webForgeCall({ jobId, payload }) {
+  await hydrateWorkers();
   let job = webForgeJobs.get(jobId);
   if (!job) {
-    const tab = await chrome.tabs.create({ url: CHAT_HOME });
-    job = { tabId: tab.id, workerSessionId: null, workerChars: 0, busy: false };
+    job = { tabId: null, workerSessionId: null, workerChars: 0, phase: null, busy: false };
     webForgeJobs.set(jobId, job);
   }
   if (job.busy) return { ok: false, errorClass: 'RATE_LIMITED', detail: '上一个整理请求还没有结束，已跳过并发调用。' };
   job.busy = true;
+  let rotated = false;
   try {
+    await reconcileWorker(job);
+    if (job.tabId == null) {
+      // 后台标签页：不抢走用户正在使用的来源会话，也不覆盖它。
+      const tab = await chrome.tabs.create({ url: CHAT_HOME, active: false });
+      job.tabId = tab.id;
+      job.phase = 'created';
+      persistWorkers();
+    }
     const prompt = renderForgePrompt(payload);
     if (job.workerChars > 0 && job.workerChars + prompt.length > WORKER_ROTATE_CHARS) {
       // worker 会话膨胀：当前 Continuity 已在手（模型输出），换新会话继续，不让 worker 无限变长。
       await chrome.tabs.update(job.tabId, { url: CHAT_HOME });
       job.workerSessionId = null;
       job.workerChars = 0;
+      rotated = true;
+      persistWorkers();
       await new Promise(r => setTimeout(r, 1200));
     }
     await waitTransportReady(job.tabId);
+    job.phase = 'sending';
+    persistWorkers();
     const result = await nativeSendAndObserve({ tabId: job.tabId, content: prompt });
     if (result.targetSessionId) job.workerSessionId = result.targetSessionId;
     job.workerChars += prompt.length + (result.observation?.sse?.length || 0);
+    job.phase = 'idle';
+    persistWorkers();
     if (!result.ok) {
       return { ok: false, errorClass: result.outcome?.type || 'UNKNOWN', detail: result.outcome?.detail || 'worker 调用失败' };
     }
     let response = '';
     try { response = replayStream(result.observation.sse || '').response || ''; } catch { response = ''; }
-    return { ok: true, response, workerSessionId: job.workerSessionId, workerChars: job.workerChars };
+    return { ok: true, response, workerSessionId: job.workerSessionId, workerChars: job.workerChars, tabId: job.tabId, rotated };
   } finally {
     job.busy = false;
   }

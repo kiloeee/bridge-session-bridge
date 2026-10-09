@@ -8,7 +8,7 @@ Baseline for comparison: this repository shares git ancestry with upstream
 The merge base is commit `ab202db540f8e2070b6056d324931962e294af5f` ("docs: README
 改写为正式书面风格"), which is an ancestor of `HEAD`. Every "verbatim / modified"
 judgement below is a blob-hash comparison of the file at `ab202db` against the
-same path at the frozen v0.4.1 `HEAD`.
+same path at the frozen v0.4.2 `HEAD`.
 
 ## Classification legend
 
@@ -68,7 +68,7 @@ vendors no third-party code and has no runtime dependencies.
 | `sidepanel/app.js` | DERIVED_FROM_UPSTREAM | rewritten for the three-page product flow | MIT © 2026 Liuxd-1230 / © 2026 kiloeee (GPL-3.0-only) |
 | `sidepanel/index.html` | DERIVED_FROM_UPSTREAM | reworked for the three-page flow | MIT © 2026 Liuxd-1230 / © 2026 kiloeee (GPL-3.0-only) |
 | `sidepanel/style.css` | DERIVED_FROM_UPSTREAM | reworked | MIT © 2026 Liuxd-1230 / © 2026 kiloeee (GPL-3.0-only) |
-| `manifest.json` | DERIVED_FROM_UPSTREAM | renamed, versioned 0.4.1, added recorder/transport content scripts, side-panel config | MIT © 2026 Liuxd-1230 / © 2026 kiloeee (GPL-3.0-only) |
+| `manifest.json` | DERIVED_FROM_UPSTREAM | renamed, versioned 0.4.2, added recorder/transport content scripts, side-panel config | MIT © 2026 Liuxd-1230 / © 2026 kiloeee (GPL-3.0-only) |
 | `.gitignore` | DERIVED_FROM_UPSTREAM | expanded for the public tree | MIT © 2026 Liuxd-1230 / © 2026 kiloeee (GPL-3.0-only) |
 | `README.md` | DERIVED_FROM_UPSTREAM | rewritten for the public project (see note below) | MIT © 2026 Liuxd-1230 / © 2026 kiloeee (GPL-3.0-only) |
 
@@ -85,12 +85,13 @@ GPL-3.0-only work. Neither holder's contribution is absorbed into the other.
 | `src/draft.js` | ORIGINAL |
 | `src/forge.js` | ORIGINAL (frozen at tag `forge-core-v0`) |
 | `src/phase0.js` | ORIGINAL (frozen at tag `forge-core-v0`) |
+| `src/plan.js` | ORIGINAL |
 | `src/forge-lineage.js` | ORIGINAL |
 | `src/forge-provider.js` | ORIGINAL |
 | `src/outcome.js` | ORIGINAL |
 | `src/transport.js` | ORIGINAL |
 | `src/web-forge.js` | ORIGINAL |
-| `test-archive.mjs`, `test-draft.mjs`, `test-forge.mjs`, `test-forge-provider.mjs`, `test-outcome.mjs`, `test-phase0.mjs`, `test-product-flow.mjs`, `test-scale.mjs`, `test-web-forge.mjs` | ORIGINAL |
+| `test-archive.mjs`, `test-draft.mjs`, `test-forge.mjs`, `test-forge-provider.mjs`, `test-outcome.mjs`, `test-phase0.mjs`, `test-plan.mjs`, `test-product-flow.mjs`, `test-scale.mjs`, `test-web-forge.mjs` | ORIGINAL |
 | `scripts/package.mjs`, `scripts/generate-fixtures.mjs`, `scripts/forge-semantic-e2e/*` | ORIGINAL |
 | `forge-cli.mjs` | ORIGINAL (legacy entry point; superseded, referenced by nothing) |
 | `sidepanel/assets/*.png` (8 files) | ORIGINAL (artwork) |

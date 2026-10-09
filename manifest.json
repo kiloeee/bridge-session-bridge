@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "桥 · Session Bridge",
-  "version": "0.4.1",
-  "version_name": "0.4.1",
+  "version": "0.4.2",
+  "version_name": "0.4.2",
   "description": "把当前会话安全接到下一个窗口：原生输入迁移（不经剪贴板），支持完整原文与滚动压缩。存档仅保存在本地。",
   "permissions": ["storage", "unlimitedStorage", "webRequest", "sidePanel", "clipboardWrite"],
   "host_permissions": ["https://chat.deepseek.com/*"],

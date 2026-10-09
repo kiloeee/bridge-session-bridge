@@ -23,8 +23,9 @@ export function renderForgePrompt(payload) {
       '- 新条目只能引用 previous_continuity 或本块 messages 里真实存在的 id，不得凭空捏造。',
       '- 不要写普通摘要，不要按时间顺序复述对话，不要把猜测写成事实。',
       '- 未被新证据推翻的长期状态必须保留。',
+      '- 另外，在本块里挑出最多 2 条最值得逐字保留的消息，放进同一份 JSON 的 "important_message_ids"（只能给本块真实存在的 id，宁少勿多，可以给 0 条）。',
       '',
-      '只输出一个 JSON 对象，格式：{"continuity": {"identity": [...], "stableFacts": [...], "activeThreads": [...], "decisions": [...], "openLoops": [...], "recentChanges": [...], "interactionPreferences": [...]}}，',
+      '只输出一个 JSON 对象，格式：{"continuity": {"identity": [...], "stableFacts": [...], "activeThreads": [...], "decisions": [...], "openLoops": [...], "recentChanges": [...], "interactionPreferences": [...]}, "important_message_ids": [...]}，',
       '每个字段是数组，每条形如 {"state": "一句话状态", "source_message_ids": ["消息id"]}。不要输出任何其他文字或代码块标记。',
     ];
   const body = task === 'important'
@@ -76,31 +77,47 @@ export function createWebForgeModel({ call }) {
 }
 
 // Web Forge job 的 checkpoint 结构与推进逻辑（sidepanel runner 与测试共用）。
-// checkpoint 存 chrome.storage.local：continuity 小、processed 是 id 列表，绝不存正文。
-export function initialForgeJob({ sourceSessionId, chunkChars }) {
+// checkpoint 存 chrome.storage.local（durable）：continuity / importantCandidates / processed 都是 id 级，
+// 绝不存正文。pendingRequest 是「防重复发送」的关键——一次向 DeepSeek 网页发出请求之前先落盘，
+// 结果持久化后再清除。SW 或浏览器重启后据此判断在途请求，绝不盲目重发。
+export function initialForgeJob({ sourceSessionId, chunkChars, snapshotFingerprint = null }) {
   return {
     jobId: `webforge-${sourceSessionId}-${Date.now().toString(36)}`,
     sourceSessionId,
     chunkChars,
-    status: 'running', // running | paused_filter | paused_rate_limit | done | failed
+    snapshotFingerprint,
+    // running | paused_filter | paused_rate_limit | paused_uncertain | assembled | sending | done | failed
+    status: 'running',
     processedMessageIds: [],
     continuity: null,
     chunkIndex: 0,
     chunkCount: 0,
-    workerSessions: [], // { sessionId, chunkRange, rotatedAt }
+    importantCandidates: [], // [{ id, chunkIndex, fromModel }]，恢复时带回，绝不只留 continuity 而丢 important
     importantMessageIds: [],
+    workerSessions: [], // { sessionId, chunkRange, rotatedAt }
+    pendingRequest: null, // { chunkIndex, task, promptFingerprint, workerSessionId, tabId, stage, at }
+    sentRunId: null, // 最终 Native Transport 成功后才写；用于区分「整理完成」与「迁移完成」
     updatedAt: Date.now(),
   };
 }
 
-// 从 checkpoint 恢复：只喂未处理的 entries，continuity 用已保存状态。
-// 返回 null 表示 checkpoint 已完成到 important 阶段之后（不该发生，防御）。
+// 旧 checkpoint（v0.4.1）没有 importantCandidates，只有 importantMessageIds 与可能已完成的 continuity。
+// 恢复时按 id 回填候选，宁可复用已付出的整理结果，也绝不全部清空后重新收费。
+function legacyCandidatesFrom(job) {
+  return (job.importantMessageIds || []).map(id => ({ id: String(id), chunkIndex: 0, fromModel: true }));
+}
+
+// 从 checkpoint 恢复：只喂未处理的 entries，continuity 与重要候选都用已保存状态。
 export function resumeForgeInput(job, entries) {
   const done = new Set((job.processedMessageIds || []).map(String));
   const remaining = entries.filter(entry => !done.has(String(entry.messageId)));
+  const previousCandidates = Array.isArray(job.importantCandidates)
+    ? job.importantCandidates
+    : legacyCandidatesFrom(job);
   return {
     remaining,
     previousContinuity: job.continuity || null,
+    previousCandidates,
     resumedFromChunk: job.chunkIndex || 0,
   };
 }

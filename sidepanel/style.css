@@ -56,6 +56,7 @@ a { color: var(--blue); text-underline-offset: 3px; }
 .text-button:hover { text-decoration: underline; text-underline-offset: 4px; }
 .text-button:disabled { color: var(--muted); text-decoration: none; }
 .explanation { color: var(--muted); font-size: 13px; line-height: 1.8; margin-top: 14px; }
+.completion-note { color: #1c4bb8; background: #eaf3ff; border: 1px solid #cfe1fb; border-radius: 12px; padding: 12px 14px; font-size: 13px; line-height: 1.8; margin-top: 14px; overflow-wrap: anywhere; }
 .inline-hint { color: #805b2b; background: #fbf3e6; padding: 13px 14px; border-radius: 12px; font-size: 13px; margin-bottom: 16px; overflow-wrap: anywhere; }
 #retryRead { margin-bottom: 16px; }
 .migration-details { margin-top: 20px; }

@@ -15,7 +15,7 @@ import { emptyContinuity } from './src/forge.js';
   const prompt = renderForgePrompt(payload);
   assert(prompt.includes('持续状态') && prompt.includes('状态更新'), '合同要点在 prompt 里');
   assert(prompt.includes('"previous_continuity"') && prompt.includes('"messages"'), 'payload 序列化完整');
-  assert(prompt.includes('important_message_ids') === false, 'roll 任务不混入 important 指令');
+  assert(prompt.includes('important_message_ids'), 'roll 任务顺带要求 ≤2 个重要 id（不再有最终 important 调用）');
   const ip = renderForgePrompt({ task: 'important', continuity, messages: [{ messageId: '3', role: 'user', content: 'x' }], max_important: 12 });
   assert(ip.includes('important_message_ids') && ip.includes('"max_important":12'));
   assert(!ip.includes('previous_continuity'), 'important 任务不带 previous_continuity');
@@ -61,6 +61,7 @@ import { emptyContinuity } from './src/forge.js';
   job.chunkIndex = 3;
   job.chunkCount = 9;
   job.processedMessageIds = ['1', '2', '3', '4'];
+  job.importantCandidates = [{ id: '2', chunkIndex: 1, fromModel: true }];
   const continuity = emptyContinuity();
   continuity.identity.push({ state: '已处理到第3块', source_message_ids: ['4'] });
   job.continuity = continuity;
@@ -70,11 +71,20 @@ import { emptyContinuity } from './src/forge.js';
     { messageId: '5', role: 'user', text: '待处理' },
     { messageId: '6', role: 'assistant', text: '待处理' },
   ];
-  const { remaining, previousContinuity, resumedFromChunk } = resumeForgeInput(job, entries);
+  const { remaining, previousContinuity, previousCandidates, resumedFromChunk } = resumeForgeInput(job, entries);
   assert.deepEqual(remaining.map(e => e.messageId), ['5', '6'], '已处理的块绝不重跑');
   assert.equal(previousContinuity.identity[0].state, '已处理到第3块');
+  assert.deepEqual(previousCandidates, [{ id: '2', chunkIndex: 1, fromModel: true }], '已付出的重要候选随 checkpoint 回来，不丢 important');
   assert.equal(resumedFromChunk, 3, '段计数接续，不从头跑');
-  console.log('PASS resumeForgeInput：断点续跑只喂剩余 entries');
+  console.log('PASS resumeForgeInput：断点续跑只喂剩余 entries，continuity 与重要候选都不丢');
+
+  // 旧 checkpoint（v0.4.1）：无 importantCandidates、只有 importantMessageIds → 按 id 回填，绝不清空重跑
+  const legacy = initialForgeJob({ sourceSessionId: 's2', chunkChars: 12000 });
+  delete legacy.importantCandidates;
+  legacy.importantMessageIds = ['7', '9'];
+  const legacyResume = resumeForgeInput(legacy, []);
+  assert.deepEqual(legacyResume.previousCandidates.map(c => c.id), ['7', '9'], '旧 checkpoint 的重要 id 被回填成候选');
+  console.log('PASS 旧 checkpoint：done/importantMessageIds 被复用，不重新收费');
 }
 
 console.log('全部 PASS：web-forge 合同');

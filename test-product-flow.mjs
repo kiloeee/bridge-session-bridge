@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import * as phase0 from './src/phase0.js';
 import * as forge from './src/forge.js';
+import * as plan from './src/plan.js';
 import { excludeBootstrapEntry } from './src/forge-lineage.js';
 
 const html = readFileSync(new URL('./sidepanel/index.html', import.meta.url), 'utf8');
@@ -50,12 +51,18 @@ const tabButtons = elementTags.filter(match => /\bdata-tab=/.test(match[2])).map
 });
 
 const [oldId, liveId, nextId] = [1, 2, 3].map(value => `00000000-0000-0000-0000-${String(value).padStart(12, '0')}`);
+// liveId 故意做成「长会话」，否则新的整理前预判会把它判成短会话直接原文迁移，
+// 滚动压缩那几条链路就没有机会跑到。oldId / nextId 保持短会话。
+const sessionTurns = new Map([[oldId, 1], [liveId, 60], [nextId, 1]]);
 const snapshots = new Map([[oldId, 'QA历史会话'], [liveId, 'QA当前会话'], [nextId, 'QA新当前会话']].map(([id, title]) => {
-  const messages = [
-    { sessionId: id, messageId: 1, parentId: null, role: 'USER', fragments: [{ type: 'REQUEST', content: `${title} user  😀\n` }] },
-    { sessionId: id, messageId: 2, parentId: 1, role: 'ASSISTANT', fragments: [{ type: 'THINK', content: 'QA隐藏思考' }, { type: 'RESPONSE', content: `${title} response` }] },
-  ];
-  return [id, { session: { sessionId: id, title, currentMessageId: 2, snapshotMessageIds: [1, 2], messageCount: 2, updatedAt: 1 }, messages }];
+  const messages = [];
+  let messageId = 0;
+  for (let turn = 1; turn <= sessionTurns.get(id); turn++) {
+    const userId = ++messageId, assistantId = ++messageId;
+    messages.push({ sessionId: id, messageId: userId, parentId: userId === 1 ? null : userId - 1, role: 'USER', fragments: [{ type: 'REQUEST', content: `${title} user ${turn}  😀\n` }] });
+    messages.push({ sessionId: id, messageId: assistantId, parentId: userId, role: 'ASSISTANT', fragments: [{ type: 'THINK', content: 'QA隐藏思考' }, { type: 'RESPONSE', content: `${title} response ${turn}` }] });
+  }
+  return [id, { session: { sessionId: id, title, currentMessageId: messageId, snapshotMessageIds: messages.map(message => message.messageId), messageCount: messages.length, updatedAt: 1 }, messages }];
 }));
 const requests = [], opened = [], armed = [], sentMigrations = [];
 const pendingSnapshots = [];
@@ -64,11 +71,12 @@ let activeBrowser = { id: 10, url: `https://chat.deepseek.com/a/chat/s/${liveId}
 let copied = '';
 let forgeConfigStub = null;
 let forgeModelMode = 'ok';
+let forgeCalls = 0;
 let lineageState = null;
 let migrateSendResult = { ok: true, outcomeType: 'SUCCESS', detail: null, targetSessionId: '11111111-1111-1111-1111-111111111111', requestPromptChars: null, refFileIdsCount: 0, diagnostic: { status: 'FINISHED', quasiStatus: 'FINISHED', httpStatus: 200 } };
 // v0.4：app.js 走 Draft/Run 持久层与 MIGRATE_SEND 消息；这里用同形状 stub。
 let draftSeq = 0;
-const context = vm.createContext({ ...phase0, ...forge, excludeBootstrapEntry,
+const context = vm.createContext({ ...phase0, ...forge, ...plan, excludeBootstrapEntry,
   document: {
     getElementById: id => nodes.get(id),
     querySelectorAll: selector => { assert.equal(selector, '[data-tab]'); return tabButtons; },
@@ -96,22 +104,22 @@ const context = vm.createContext({ ...phase0, ...forge, excludeBootstrapEntry,
   scanDraftPrivacy: () => ({ found: false, hits: [] }),
   buildMigrationReport: input => input,
   formatMigrationReport: () => 'migration report',
-  initialForgeJob: ({ sourceSessionId, chunkChars }) => ({ jobId: 'j1', sourceSessionId, chunkChars, status: 'running', processedMessageIds: [], continuity: null, chunkIndex: 0, chunkCount: 0, workerSessions: [], importantMessageIds: [], updatedAt: Date.now() }),
-  resumeForgeInput: (job, entries) => ({ remaining: entries, previousContinuity: job.continuity || null, resumedFromChunk: 0 }),
+  initialForgeJob: ({ sourceSessionId, chunkChars, snapshotFingerprint = null }) => ({ jobId: 'j1', sourceSessionId, chunkChars, snapshotFingerprint, status: 'running', processedMessageIds: [], continuity: null, chunkIndex: 0, chunkCount: 0, workerSessions: [], importantCandidates: [], importantMessageIds: [], pendingRequest: null, sentRunId: null, updatedAt: Date.now() }),
+  resumeForgeInput: (job, entries) => ({ remaining: entries, previousContinuity: job.continuity || null, previousCandidates: job.importantCandidates || [], resumedFromChunk: 0 }),
   createWebForgeModel: () => { throw new Error('web forge not exercised in this test'); },
   // 只替代网络调用：payload 形状、schema、校验仍然走真实的 forge.js。
   createForgeModel: (config, { signal, onProgress } = {}) => async payload => {
-    onProgress?.(payload?.task === 'important'
-      ? { phase: 'important' }
-      : { phase: 'roll', index: payload?.chunk_index ?? 1, total: payload?.chunk_count ?? 1 });
+    forgeCalls++;
+    onProgress?.({ phase: 'roll', index: payload?.chunk_index ?? 1, total: payload?.chunk_count ?? 1 });
     if (forgeModelMode === 'hang') {
       return new Promise((resolve, reject) => signal?.addEventListener('abort',
         () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))));
     }
     if (forgeModelMode === 'fail') throw new Error('请求过于频繁，请稍后重试。');
-    return payload?.task === 'important' ? { important_message_ids: ['1'] }
-      : { continuity: { identity: [{ state: '同一用户', source_message_ids: ['1'] }],
-        stableFacts: [], activeThreads: [], decisions: [], openLoops: [], recentChanges: [], interactionPreferences: [] } };
+    // 重要原文 id 现在由每轮 roll 顺带返回；正文仍由程序从本地 archive 读。
+    return { continuity: { identity: [{ state: '同一用户', source_message_ids: ['1'] }],
+      stableFacts: [], activeThreads: [], decisions: [], openLoops: [], recentChanges: [], interactionPreferences: [] },
+      important_message_ids: [payload?.messages?.[0]?.messageId].filter(Boolean) };
   },
   confirm: () => true,
   chrome: {
@@ -211,7 +219,9 @@ const oldFullExact = phase0.buildForgePackage(snapshots.get(oldId).session, snap
 assert.equal(sentMigrations[0].content, oldFullExact, '发送的就是这份历史会话的完整原文迁移稿（含 framing）');
 assert.equal(sentMigrations[0].lineage, null, '完整原文不登记代际');
 assert(nodes.get('completeHow').textContent.includes('原生输入'), '完成页说明已改为原生输入');
-assert(nodes.get('openedStatus').textContent.includes('已自动发送'));
+assert(nodes.get('openedStatus').textContent.includes('完整原文'), '完成状态写明本次用的是完整原文');
+assert.equal(nodes.get('completeNote').hidden, false, '完成页给出本次结果说明');
+assert(nodes.get('completeNote').textContent.includes('完整原文'), '本次结果说明与状态一致');
 assert.equal(nodes.get('targetLinkRow').hidden, false, '完成页给出新会话入口');
 assert(htmlText.includes('手动粘贴备份'), '剪贴板降级为完成页手动备份入口');
 
@@ -274,26 +284,17 @@ assert.equal(nodes.get('migrationComplete').hidden, true, '取消不会展示完
 assert(nodes.get('status').textContent.includes('已取消'));
 assert.equal(armed.length, 0, '取消的 Forge 不登记代际');
 
-// ── Forge 成功：这个 QA 会话太短，Recent Exact 覆盖整个会话 → 产品层先提示，不直接迁 ──
+// ── Forge 成功：长会话的滚动稿确实更小 → 直接原生发送滚动稿（不再有二次选择） ──
 forgeModelMode = 'ok';
 nodes.get('migrateCurrent').onclick();
 await settle();
 answerSnapshot(liveId);
 await settle();
-assert.equal(nodes.get('forgeNotHelpful').hidden, false, '短会话滚动压缩反而更大时，先提示而不是直接迁移');
-assert.equal(nodes.get('migrationComplete').hidden, true, '提示未决时不进入完成页');
-assert.equal(armed.length, 0, '提示未决时不登记代际');
-assert.equal(nodes.get('notHelpfulFull').textContent, `${phase0.countChars(liveFullExact).toLocaleString('zh-CN')} 字符`);
-assert.equal(nodes.get('notHelpfulRolling').textContent, nodes.get('rollingOutput').textContent, '提示里的滚动结果就是刚跑出来的真实结果');
-assert.equal(nodes.get('notHelpfulExtraRow').hidden, false);
-assert(nodes.get('notHelpfulExtra').textContent.startsWith('约 '));
-assert.equal(nodes.get('rollingResult').hidden, true, '提示期间不重复显示滚动结果卡片');
-
-// 仍使用滚动压缩：复用刚才已经生成的结果，不重新调用模型。
-nodes.get('notHelpfulKeepForge').onclick();
-await settle();
-assert.equal(nodes.get('forgeNotHelpful').hidden, true);
-assert.equal(nodes.get('migrationComplete').hidden, false);
+assert.equal(nodes.get('forgeProgress').hidden, true, '整理结束就离开进度页');
+assert.equal(nodes.get('migrationComplete').hidden, false, '滚动压缩成功后进入完成页，生成可用的新会话');
+assert(nodes.get('openedStatus').textContent.includes('滚动压缩'), '完成状态写明本次用了滚动压缩');
+assert.equal(nodes.get('completeNote').hidden, false, '完成页给出本次结果说明');
+assert(nodes.get('completeNote').textContent.includes('持续状态'), '滚动压缩的结果说明与完整原文不同');
 const rollingSend = sentMigrations.at(-1);
 assert.equal(rollingSend.mode, 'rolling');
 assert(rollingSend.content.includes('[CONTINUITY STATE]') && rollingSend.content.includes('[IMPORTANT EXACT HISTORY]') && rollingSend.content.includes('[RECENT EXACT CONVERSATION]'));
@@ -354,27 +355,37 @@ assert(!copied.includes('同一用户'), '测试报告不含 Continuity 正文')
 assert(!copied.includes('QA当前会话 user'), '测试报告不含对话正文');
 assert(!copied.includes('#1'), '测试报告不含 message id 明细');
 
-// 提示里的另一条路：改选完整原文，复用同一次快照走完整原文链，不登记代际。
+// ── 短会话预判（§2）：明确不划算 → 零模型调用、零工作会话，直接完整原文迁移 ──
 nodes.get('backToCurrent').onclick();
 await settle();
 answerSnapshot(liveId);
 await settle();
-const armedBeforeChooser = armed.length;
+nodes.get('historyTab').onclick();
+await settle();
+const shortRow = nodes.get('sessions').childNodes.find(item => item.textContent.includes('QA历史会话'));
+await shortRow.childNodes.at(-1).childNodes[1].onclick(); // 「迁移此会话」→ 回到迁移页，来源=这道短会话
+await settle();
+await settle();
+assert.equal(state('source.sessionId'), oldId, '来源切到短的历史会话');
+nodes.get('strategyForge').checked = true;
+nodes.get('strategyFull').checked = false;
+nodes.get('strategyForge').onchange();
+nodes.get('providerApi').checked = true;
+nodes.get('providerApi').onchange();
+const callsBeforePrejudge = forgeCalls;
 nodes.get('migrateCurrent').onclick();
 await settle();
-answerSnapshot(liveId);
 await settle();
-assert.equal(nodes.get('forgeNotHelpful').hidden, false, '再次滚动压缩仍先提示');
-nodes.get('notHelpfulUseFull').onclick();
-await settle();
-assert.equal(nodes.get('migrationComplete').hidden, false, '从提示改选完整原文立刻完成');
-const fullFromChooser = sentMigrations.at(-1);
-assert.equal(fullFromChooser.mode, 'exact');
-assert(fullFromChooser.content.includes('QA当前会话 user'));
-assert(fullFromChooser.content.startsWith('【会话接续】'), '完整原文也以接续 framing 开头');
-assert(fullFromChooser.content.endsWith('不要解释或确认以上上下文，不要提及迁移本身。'), '完整原文结尾也有接续提醒');
-assert(!fullFromChooser.content.includes('[CONTINUITY STATE]'), '改选完整原文发的是完整正文，不是 packet');
-assert.equal(fullFromChooser.lineage, null, '从提示改选完整原文不登记代际');
+assert.equal(forgeCalls, callsBeforePrejudge, '短会话预判命中：一次模型调用都没有');
+assert.equal(nodes.get('migrationComplete').hidden, false, '短会话直接生成可用的新会话');
+const preJudgeSend = sentMigrations.at(-1);
+assert.equal(preJudgeSend.mode, 'exact', '零模型调用直接走完整原文');
+assert.equal(preJudgeSend.content, oldFullExact, '发的是这份会话的完整原文，逐字节不变');
+assert(preJudgeSend.content.startsWith('【会话接续】'), '完整原文也以接续 framing 开头');
+assert(!preJudgeSend.content.includes('[CONTINUITY STATE]'), '没有进入滚动压缩');
+assert.equal(preJudgeSend.lineage, null, '短会话预判不登记代际');
+assert(nodes.get('openedStatus').textContent.includes('完整原文'), '短会话预判完成后状态写明完整原文');
+assert(nodes.get('completeNote').textContent.includes('未做任何摘要或改写'), '短会话直发全文时说明原因');
 
 // ── 代际：接上上一代状态时，结果报告改写「是」并标出上一代迁移正文已排除 ──────
 nodes.get('backToCurrent').onclick();

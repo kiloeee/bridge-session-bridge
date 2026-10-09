@@ -41,7 +41,7 @@
 
 | 文件 | 来自 Liuxd-1230（MIT）的原始代码 | kiloeee（GPL-3.0-only）的修改贡献 |
 |---|---|---|
-| `manifest.json` | 上游清单结构 | 更名、升版（0.4.1）、增加 recorder/transport 内容脚本与侧栏配置 |
+| `manifest.json` | 上游清单结构 | 更名、升版（0.4.2）、增加 recorder/transport 内容脚本与侧栏配置 |
 | `src/background.js` | 上游后台骨架 | 扩展流生命周期：规范快照、draft/run 落库、结果判定、工作标签页驱动 |
 | `src/content.js` | 上游内容脚本 | 扩展 `history_messages` 调用与自检接线 |
 | `src/db.js` | 上游 IndexedDB 层 | 扩展 `drafts` / `runs` store |
@@ -59,7 +59,7 @@
 以下文件由 **kiloeee** 原创，不源自上游，版权归 **kiloeee**，以 GPL-3.0-only 分发：
 
 - **运行时：** `src/archive.js`、`src/draft.js`、`src/forge.js`、`src/forge-lineage.js`、
-  `src/forge-provider.js`、`src/outcome.js`、`src/phase0.js`、`src/transport.js`、`src/web-forge.js`
+  `src/forge-provider.js`、`src/outcome.js`、`src/phase0.js`、`src/plan.js`、`src/transport.js`、`src/web-forge.js`
 - **界面素材：** `sidepanel/assets/` 下随包分发的 6 张 PNG（背景、鲸鱼、图标）
 - **打包与工具：** `scripts/*`、`forge-cli.mjs`
 

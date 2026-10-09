@@ -25,6 +25,7 @@ const RUNTIME_FILES = [
   'src/normalize.js',
   'src/outcome.js',
   'src/phase0.js',
+  'src/plan.js',
   'src/rebuild.js',
   'src/recorder-bridge.js',
   'src/recorder-main.js',
@@ -144,6 +145,41 @@ if (missing.length) {
   process.exit(1);
 }
 console.log(`引用完整性：manifest 与侧栏 HTML/CSS 引用的 ${referenced.size} 个路径全部在包内`);
+
+// 第二类完整性：包内 JS 的 import 目标也必须都在包里。
+// 现有守卫只覆盖 manifest/HTML/CSS 的直接引用，漏掉 import 会让「源码测试绿、商店包缺模块」静默坏包。
+function normalizePath(path) {
+  const parts = [];
+  for (const seg of path.split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') parts.pop();
+    else parts.push(seg);
+  }
+  return parts.join('/');
+}
+
+function collectImportRefs() {
+  const refs = new Map(); // 解析后的包内路径 -> 引用它的文件
+  for (const { name } of entries) {
+    if (!name.endsWith('.js')) continue;
+    const text = byName.get(name).data.toString('utf8');
+    const baseDir = name.includes('/') ? name.slice(0, name.lastIndexOf('/') + 1) : '';
+    for (const match of text.matchAll(/(?:from|import)\s+['"]([^'"]+)['"]/g)) {
+      const spec = match[1];
+      if (!spec.startsWith('.')) continue; // 裸模块名不是包内文件
+      refs.set(normalizePath(baseDir + spec), name);
+    }
+  }
+  return refs;
+}
+
+const importRefs = collectImportRefs();
+const missingImports = [...importRefs.keys()].filter(name => !byName.has(name)).sort();
+if (missingImports.length) {
+  console.error(`\n发布包缺少被 import 的模块：\n  ${missingImports.map(n => `${n}（被 ${importRefs.get(n)} 引用）`).join('\n  ')}`);
+  process.exit(1);
+}
+console.log(`import 完整性：包内 JS 的 ${importRefs.size} 个 import 目标全部在包内`);
 
 const zip = buildZip(entries);
 const outDir = join(root, 'dist');

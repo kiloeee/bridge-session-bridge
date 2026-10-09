@@ -12,7 +12,7 @@ session and lets you keep going.
 | | |
 |---|---|
 | Manifest name | `桥 · Session Bridge` |
-| Version | 0.4.1 |
+| Version | 0.4.2 |
 | Target | Edge / Chrome, Manifest V3, side panel |
 | Runtime dependencies | **none** |
 | License | GPL-3.0-only (upstream-derived portions remain MIT) — see [`LICENSE`](LICENSE) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) |
@@ -29,7 +29,7 @@ Add-ons build is still under review).
 ### Method 1 — download from GitHub Releases (use this today)
 
 1. Open the [Releases page](https://github.com/kiloeee/bridge-session-bridge/releases).
-2. Under **Assets**, download **`bridge-v0.4.1-edge.zip`** — *not* the
+2. Under **Assets**, download **`bridge-v0.4.2-edge.zip`** — *not* the
    "Source code" ZIP that GitHub adds automatically.
 3. Unzip it to a folder you will keep.
 4. In Edge's address bar, open `edge://extensions`.
@@ -40,8 +40,8 @@ Add-ons build is still under review).
 
 Full step-by-step guide with the security details: [`docs/INSTALL.md`](docs/INSTALL.md).
 
-> **Verify your download.** `bridge-v0.4.1-edge.zip` SHA-256:
-> `f5d09022f28efd42e8bb664f494cf3a3f2df3540212baf800c9f3f7a06058adb`
+> **Verify your download.** `bridge-v0.4.2-edge.zip` SHA-256:
+> `489008dae40751c00ee0f59176b7078e80ad5388418cf7dacdf65426c50c89d0`
 
 - The ZIP **cannot** be installed by double-clicking it. Edge needs the
   *unpacked* folder.

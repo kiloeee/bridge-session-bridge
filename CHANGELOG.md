@@ -3,6 +3,50 @@
 All notable changes to 桥 · Session Bridge are recorded here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] — 2026-10-09
+
+Rolling-compression full-chain fix. The goal of this release is that **clicking
+migrate produces a usable new session** — with no wasted API credit, no
+re-compressing in the web path, and no lost history across generations.
+
+### Added
+
+- **Two-phase migration decision.** A new pre-pass decides, *before any model
+  call*, whether rolling compression can actually help. A short session whose
+  entire history already fits in the last 20 turns skips compression entirely and
+  migrates as exact full text — **zero model calls, zero worker sessions** — and
+  the completion screen explains why.
+- **Outcome-specific completion text.** The migration-complete screen now says
+  what actually happened (short session → exact; rolling used; rolling not
+  smaller → auto-fell-back to exact; user chose exact) instead of one generic
+  line for every outcome.
+- **Content-sensitive source fingerprint** so a resumed job never silently mixes
+  history from a changed source session.
+
+### Changed
+
+- **The final "important" model call was removed.** Important-quote selection is
+  now gathered from the per-chunk roll calls (≤2 ids each) and resolved
+  deterministically and locally — no additional model request.
+- **Rolling that is not smaller than the full text now automatically falls back
+  to exact full-text migration** in the same pass, and the report states any cost
+  that *was* already incurred, instead of pausing for a second confirmation.
+- **Web worker lifecycle corrected:** one job runs a bounded number of worker
+  sessions (not one tab per chunk), workers are registered so they are not
+  re-created after a service-worker restart, and they are excluded from the
+  migration source list.
+- **Provider is labelled truthfully** — the web path is no longer recorded as
+  `api`.
+
+### Fixed
+
+- Premature "done": a migration is only `DONE` after the native transport
+  succeeds and the target session is confirmed, never when assembly finishes.
+- Resuming a legacy `status:"done"` checkpoint no longer restarts the rolling job
+  from zero; its continuity and important-quote candidates are reused.
+- A resumed job whose previous send is unconfirmed pauses as *uncertain* instead
+  of blindly re-sending.
+
 ## [0.4.1] — 2026-10-09
 
 Licensing and attribution correction. No functional change to the extension.

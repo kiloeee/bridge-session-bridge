@@ -218,12 +218,62 @@ export function importantExact(entries, ids, { strict = false } = {}) {
   return { items, unknownIds };
 }
 
+// 每次 roll 只允许模型顺带标记这么多「本块重要」id。模型多给了也按这个上限截断。
+export const MAX_ROLL_IMPORTANT_IDS = 2;
+
+// 确定性、有界的重要原文选取。候选只来自每次 roll 顺带返回的 id（每次最多两个），
+// 这里不调用模型、也不再发起任何请求。
+//   1) 先把候选里被最终 Continuity 引用到的排在最前——那是「持续有效的状态来源」；
+//   2) 其余按分块轮转（chunkIndex 从小到大轮流取），保证时间分布均匀，
+//      绝不 slice(0, N) 偏向最早历史；
+//   3) 候选不足 maxImportant 时允许更少，不强制凑数。
+export function selectImportantCandidates(candidates, { continuity = null, entries = [], maxImportant = DEFAULT_MAX_IMPORTANT } = {}) {
+  const byId = new Map(entries.map(entry => [String(entry.messageId), entry]));
+  const order = new Map(entries.map((entry, index) => [String(entry.messageId), index]));
+  const pool = [];
+  const seen = new Set();
+  for (const candidate of candidates || []) {
+    const id = String(candidate?.id ?? '');
+    if (!id || !byId.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    pool.push({ id, chunkIndex: Number(candidate?.chunkIndex) || 0 });
+  }
+
+  const referenced = new Set();
+  for (const key of FIELD_KEYS) for (const item of (continuity?.[key] || [])) for (const id of item.source_message_ids) referenced.add(String(id));
+  const chosen = new Set();
+  for (const candidate of pool) {
+    if (chosen.size >= maxImportant) break;
+    if (referenced.has(candidate.id)) chosen.add(candidate.id);
+  }
+
+  const byChunk = new Map();
+  for (const candidate of pool) {
+    if (chosen.has(candidate.id)) continue;
+    if (!byChunk.has(candidate.chunkIndex)) byChunk.set(candidate.chunkIndex, []);
+    byChunk.get(candidate.chunkIndex).push(candidate.id);
+  }
+  const chunkOrder = [...byChunk.keys()].sort((a, b) => a - b);
+  let moved = true;
+  while (chosen.size < maxImportant && moved) {
+    moved = false;
+    for (const chunkIndex of chunkOrder) {
+      if (chosen.size >= maxImportant) break;
+      const queue = byChunk.get(chunkIndex);
+      if (queue.length) { chosen.add(queue.shift()); moved = true; }
+    }
+  }
+  // 输出按原文时间顺序，读起来才自然。
+  return [...chosen].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+}
+
 // §7 Rolling Forge + §8 Generational Forge：State[n+1] = update(State[n], Chunk[n])。
 // 每轮模型只看到 previous state + 当前 chunk，绝不重发前面全部原文。
 // 证据域（allowed）＝ 上一代 continuity 已验证的 source refs ∪ 本代已处理过的 id ∪ 当前 chunk 的 id。
 // 关键：上一代 continuity 的 id 指向上游 Session，对本代仍然有效，绝不能因为「不在本代 messages 里」而被剔除。
+// Important 不再有「最后一次全历史模型调用」：候选 id 由每轮 roll 顺带返回，正文一律由程序从本地读。
 export async function rollupForge({
-  entries, previousContinuity = null, model,
+  entries, previousContinuity = null, model, previousCandidates = [], candidateIndexOffset = 0,
   chunkChars = DEFAULT_CHUNK_CHARS, maxImportant = DEFAULT_MAX_IMPORTANT,
   maxItemsPerField = DEFAULT_MAX_ITEMS_PER_FIELD, strict = false, onChunk = null,
 }) {
@@ -236,6 +286,15 @@ export async function rollupForge({
   const rejectedSourceIds = [];
   let droppedItems = 0, mergedItems = 0, evictedItems = 0;
   const processed = new Set();
+  // 跨块保留的重要候选（只存 id + 块序，绝不存正文）。恢复时由 checkpoint 带回来。
+  const candidates = [];
+  const candidateSeen = new Set();
+  for (const candidate of previousCandidates || []) {
+    const id = String(candidate?.id ?? '');
+    if (!id || candidateSeen.has(id)) continue;
+    candidateSeen.add(id);
+    candidates.push({ id, chunkIndex: Number(candidate?.chunkIndex) || 0, fromModel: candidate?.fromModel !== false });
+  }
   for (const chunk of chunks) {
     const response = await model({
       task: 'roll',
@@ -256,25 +315,35 @@ export async function rollupForge({
     mergedItems += bounded.mergedItems;
     evictedItems += bounded.evictedItems;
     state = bounded.state;
+    // 每块顺带收集重要候选：只接受本块真实存在的 id，最多 MAX_ROLL_IMPORTANT_IDS 个。
+    const inChunk = new Set(chunk.entries.map(entry => String(entry.messageId)));
+    const rollIds = Array.isArray(response?.important_message_ids) ? response.important_message_ids : [];
+    for (const raw of rollIds.slice(0, MAX_ROLL_IMPORTANT_IDS)) {
+      const id = String(raw);
+      if (!inChunk.has(id) || candidateSeen.has(id)) continue;
+      candidateSeen.add(id);
+      candidates.push({ id, chunkIndex: candidateIndexOffset + chunk.index, fromModel: true });
+    }
     for (const entry of chunk.entries) processed.add(String(entry.messageId));
     // checkpoint 回调（可选，additive）：每块处理完交出当前状态，供 Web Forge 断点续跑。
     // 不改变任何引擎语义；回调自身抛错视为致命（调用方自包裹）。
-    if (onChunk) await onChunk({ chunkIndex: chunk.index, chunkCount: chunks.length, continuity: state, processedMessageIds: [...processed].map(String) });
+    if (onChunk) await onChunk({
+      chunkIndex: chunk.index, chunkCount: chunks.length, continuity: state,
+      processedMessageIds: [...processed].map(String), importantCandidates: candidates,
+    });
   }
-  const selection = await model({
-    task: 'important',
-    continuity: state,
-    messages: entries.map(publicEntry),
-    max_important: maxImportant,
-    contract: FORGE_IMPORTANT_CONTRACT,
-  });
-  const { items, unknownIds } = importantExact(entries, selection?.important_message_ids, { strict });
+  const importantMessageIds = selectImportantCandidates(candidates, { continuity: state, entries, maxImportant });
+  const { items, unknownIds } = importantExact(entries, importantMessageIds, { strict });
   return {
     continuity: state,
     importantMessageIds: items.map(item => item.messageId),
     importantExact: items,
     chunks: chunks.length,
-    diagnostics: { rejectedSourceIds, droppedItems, mergedItems, evictedItems, unknownImportantIds: unknownIds },
+    candidates,
+    diagnostics: {
+      rejectedSourceIds, droppedItems, mergedItems, evictedItems, unknownImportantIds: unknownIds,
+      importantPoolSize: candidates.length, importantFromRoll: candidates.filter(candidate => candidate.fromModel).length,
+    },
   };
 }
 

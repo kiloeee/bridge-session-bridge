@@ -1,7 +1,7 @@
 # Architecture
 
 This document describes what the code actually does. It is written against
-v0.4.1 and does not describe planned work.
+v0.4.2 and does not describe planned work.
 
 ## Shape of the system
 
@@ -103,8 +103,27 @@ exactly once; there is no retry framework. The chunk budget
 web limit**.
 
 If the rolling output is larger than the source, the extension does not migrate
-the larger packet; it surfaces that the conversation does not need compression
-and offers the exact path, reusing the same snapshot.
+the larger packet; it **automatically falls back to the exact path in the same
+pass**, reusing the same snapshot, and reports any cost that was already
+incurred.
+
+### The two-phase decision (`src/plan.js`)
+
+`src/plan.js` is a pure, side-effect-free decision module. A **pre** pass — run
+on an already-prepared source snapshot, before any model call — decides whether
+rolling compression can help at all. If the whole conversation already fits in
+the last `RECENT_TURNS = 20` turns, or the fixed overhead plus the required
+recent text is already no shorter than the full text, it returns `exact` with
+reason `EXACT_NO_BENEFIT` and the migration proceeds as exact full text with
+**zero model calls and zero worker sessions**. Otherwise it returns
+`ROLLING_ELIGIBLE`. After assembly, a **post** pass compares the assembled
+rolling text against the full text and either sends the rolling draft or falls
+back to exact. A request for the API provider with no key configured is blocked
+with a prompt; the provider is never switched silently.
+
+A content-sensitive `snapshotFingerprint` (over message order, role, id and body)
+guards the send and any resumed job: if the source changed between the pre-pass
+and the send, the migration stops instead of mixing old and new history.
 
 ### Generation / lineage
 
@@ -163,7 +182,9 @@ silently and never retries with altered content.
 ## Side panel
 
 `sidepanel/app.js` is the only UI code. The product display name is defined once
-at the top (`PRODUCT_DISPLAY_NAME`) and derived for the header and title. The
+at the top (`PRODUCT_DISPLAY_NAME`) and derived for the header and title. It owns
+the completion status text, which is chosen per outcome (exact / rolling /
+rolling-fell-back / user-chose-exact) rather than being one generic line. The
 panel is three pages — **迁移 / Migration**, **历史 / History**, **设置 /
 Settings** — and loads its module graph as ES modules on `chrome-extension://`.
 It reads and writes IndexedDB through `src/db.js` (never a content script).

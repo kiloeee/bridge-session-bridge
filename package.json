@@ -1,12 +1,12 @@
 {
   "name": "bridge-session-bridge",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "type": "module",
   "description": "Edge/Chrome MV3 侧栏扩展：把 DeepSeek 会话迁移到新窗口，完整原文优先，超长会话可用 Forge 压缩。",
   "license": "GPL-3.0-only",
   "scripts": {
-    "test": "node test-phase0.mjs && node test-archive.mjs && node test-forge.mjs && node test-forge-provider.mjs && node test-product-flow.mjs && node test-rebuild.mjs && node test-outcome.mjs && node test-web-forge.mjs && node test-draft.mjs && node test-scale.mjs",
+    "test": "node test-phase0.mjs && node test-archive.mjs && node test-forge.mjs && node test-plan.mjs && node test-forge-provider.mjs && node test-product-flow.mjs && node test-rebuild.mjs && node test-outcome.mjs && node test-web-forge.mjs && node test-draft.mjs && node test-scale.mjs",
     "package": "node scripts/package.mjs"
   }
 }
