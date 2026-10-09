@@ -2,7 +2,7 @@ import { saveSnapshot, appendRaw, countSessions } from './db.js';
 import { normalizeMessages, normalizeSession } from './normalize.js';
 import { buildCanonicalSnapshot } from './archive.js';
 import { saveForgeState, takePendingMigration, armPendingMigration } from './forge-lineage.js';
-import { updateRun } from './draft.js';
+import { updateRun, markRunPendingSend } from './draft.js';
 import { classifyOutcome, summarizeRequestBody } from './outcome.js';
 import { replayStream } from './rebuild.js';
 import { renderForgePrompt } from './web-forge.js';
@@ -390,7 +390,7 @@ async function pullHistoryViaTab(tabId, sessionId) {
 
 // 一次完整的 native 发送：确保 tab → 等就绪 → 注入+完整性验证 → 真实发送 →
 // 观察终态 → 分类。tab 由调用方决定（迁移=新 tab；worker=复用 tab）。
-async function nativeSendAndObserve({ tabId = null, content, expectedSessionId = null, progress = null }) {
+async function nativeSendAndObserve({ tabId = null, content, expectedSessionId = null, progress = null, hooks = null }) {
   let createdTab = false;
   if (tabId == null) {
     const tab = await chrome.tabs.create({ url: CHAT_HOME });
@@ -408,6 +408,16 @@ async function nativeSendAndObserve({ tabId = null, content, expectedSessionId =
     };
   }
   progress?.({ phase: 'sending', tabId });
+  // C-1：触发发送前，先把「正在派发」可靠落盘。落盘失败就中止发送——绝不先发再补记录。
+  if (hooks?.beforeDispatch) {
+    try { await hooks.beforeDispatch(tabId); }
+    catch (err) {
+      return {
+        ok: false, stage: 'dispatch', tabId, createdTab, inject,
+        outcome: { type: 'TRANSPORT_ERROR', ok: false, detail: `无法记录发送意图，已中止发送：${String(err?.message || err)}`, evidence: {} },
+      };
+    }
+  }
   const observation = observeCompletion(tabId, { expectedSessionId, timeoutMs: terminalTimeoutMs(content.length) });
   const send = await chrome.tabs.sendMessage(tabId, { type: 'TRANSPORT_SEND' });
   if (!send?.clicked) {
@@ -416,6 +426,8 @@ async function nativeSendAndObserve({ tabId = null, content, expectedSessionId =
       outcome: { type: 'TRANSPORT_ERROR', ok: false, detail: `发送控件未触发：${send?.reason || 'unknown'}`, evidence: { send } },
     };
   }
+  // 点击已确认：请求已被触发，此后「是否送达」都不确定。记下这一步，重启后据此保守暂停。
+  if (hooks?.afterDispatch) { try { await hooks.afterDispatch(tabId); } catch { /* 见证失败不阻断发送 */ } }
   progress?.({ phase: 'observing', tabId });
   const obs = await observation;
   const request = summarizeRequestBody(obs.requestBody);
@@ -436,7 +448,12 @@ async function nativeSendAndObserve({ tabId = null, content, expectedSessionId =
 // ── MIGRATE_SEND：一次真实迁移 run（exact 或 rolling 的最终 packet） ──────────
 async function migrateSend({ runId, draftId, sourceSessionId, mode, content, lineage = null }) {
   const patchProgress = event => broadcast({ type: 'MIGRATION_PROGRESS', runId, ...event });
-  const result = await nativeSendAndObserve({ content, progress: patchProgress });
+  // C-1：把原生发送的两个关键相位持久化到 Run 上，供后台中断后对账（面板读 run.pendingSend）。
+  const hooks = runId ? {
+    beforeDispatch: tabId => markRunPendingSend(runId, { stage: 'dispatching', tabId }),
+    afterDispatch: tabId => markRunPendingSend(runId, { stage: 'dispatched', tabId }),
+  } : null;
+  const result = await nativeSendAndObserve({ content, progress: patchProgress, hooks });
   const statusPatch = {
     targetSessionId: result.targetSessionId || null,
     requestPromptChars: result.request?.promptChars ?? null,

@@ -59,9 +59,31 @@ export async function createRun({ draftId, sourceSessionId, mode, transport }) {
     errorClass: null,
     revisionCount: 1,
     diagnostic: {},
+    // C-1 发送意图（write-ahead）：在真正调用 MIGRATE_SEND 之前由面板落盘，
+    // 由 Service Worker 在触发发送前后推进 stage。null 表示这一次发送从未请求。
+    pendingSend: null,
   };
   await putRun(run);
   return run;
+}
+
+// C-1：只合并 pendingSend 子对象，避免 updateRun 的顶层覆盖把它整块抹掉。
+// 终态 finalStatus 才是「已解决」的判据；pendingSend 作为对账证据保留，直到面板确认展示。
+export async function markRunPendingSend(runId, patch) {
+  const run = await runById(runId);
+  if (!run) return null;
+  const next = { ...run, pendingSend: { ...(run.pendingSend || {}), ...patch } };
+  await putRun(next);
+  return next;
+}
+
+// 面板已向用户展示这次发送的终态后，清除意图标记（表示已确认，不再是未决发送）。
+export async function clearRunPendingSend(runId) {
+  const run = await runById(runId);
+  if (!run || !run.pendingSend) return run || null;
+  const next = { ...run, pendingSend: null };
+  await putRun(next);
+  return next;
 }
 
 export async function updateRun(runId, patch) {

@@ -5,7 +5,7 @@ import { analyzeCapacity, formatCapacityReport, messagesForSnapshot, countChars,
 import { rollupForge, assembleForgePacket } from '../src/forge.js';
 import { DEFAULT_FORGE_MODEL, loadForgeConfig, saveForgeConfig, clearForgeConfig, requestApiPermission, hasApiPermission, testConnection, createForgeModel } from '../src/forge-provider.js';
 import { getForgeState, excludeBootstrapEntry } from '../src/forge-lineage.js';
-import { createDraft, createRun, getRun, updateRun, scanDraftPrivacy, buildMigrationReport, formatMigrationReport } from '../src/draft.js';
+import { createDraft, createRun, getRun, updateRun, listRunsFor, markRunPendingSend, clearRunPendingSend, scanDraftPrivacy, buildMigrationReport, formatMigrationReport } from '../src/draft.js';
 import { createWebForgeModel, initialForgeJob, resumeForgeInput } from '../src/web-forge.js';
 import { DEFAULT_CHUNK_CHARS } from '../src/forge.js';
 import { planMigration, snapshotFingerprint } from '../src/plan.js';
@@ -274,6 +274,8 @@ function showCurrent(result) {
   updateStrategyUi();
   renderRollingResult();
   setActionsDisabled(false);
+  // C-1：进入这个来源时，主动提示上一次未决的发送（不确定 / 结果丢失），不等用户再点一次。
+  reconcileInterruptedSend(session.sessionId).then(showRecoveryNotice).catch(() => {});
   recordTechnical('当前会话已读取');
 }
 
@@ -542,21 +544,157 @@ function showSendProgress(label) {
   $('progressLabel').textContent = label;
 }
 
+// ── C-1 发送中断恢复 ─────────────────────────────────────────────────────────
+// 原生发送进行中后台被杀时：(1) 不在下次点击时静默重发；(2) 用户能看懂并安全恢复。
+// 只复用现有 Draft/Run（IndexedDB）与 Web Forge checkpoint，不新建发送状态机。
+// Run.pendingSend.stage 取值：intent（面板已落盘，SW 未触发）→ dispatching（正要点击）
+//   → dispatched（点击已确认）。terminal finalStatus 才是「已解决」的唯一判据。
+
+// 发送身份指纹：仅用于对账取证，不复制正文，也不等同于来源快照指纹。
+function pendingSendFingerprint(run) {
+  const source = `${run.sourceSessionId}|${run.mode}|${run.chars}`;
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < source.length; i++) { hash ^= source.charCodeAt(i); hash = Math.imul(hash, 0x01000193) >>> 0; }
+  return hash.toString(16);
+}
+
+// 把一条已终态的 Run 还原成 routeOutcome / renderNativeComplete 能用的发送结果。
+function outcomeFromRun(run) {
+  return {
+    ok: run.finalStatus === 'SUCCESS',
+    outcomeType: run.finalStatus,
+    targetSessionId: run.targetSessionId || null,
+    requestPromptChars: run.requestPromptChars ?? null,
+    refFileIdsCount: run.refFileIdsCount ?? null,
+    detail: run.errorClass || null,
+    diagnostic: {
+      status: run.diagnostic?.status ?? null,
+      quasiStatus: run.diagnostic?.quasiStatus ?? null,
+      httpStatus: run.diagnostic?.httpStatus ?? null,
+    },
+  };
+}
+
+// 发送意图先落盘，再发 MIGRATE_SEND。落盘失败 → 抛错（调用方必须中止发送）。
+// 返回 { sendResult } 或 { unresolved: { run, error } }。绝不把「无法确认」当成「未发送」。
+async function dispatchSend(run, payload, { fingerprint = null } = {}) {
+  await markRunPendingSend(run.runId, {
+    at: Date.now(), stage: 'intent', tabId: null, targetSessionId: null,
+    fingerprint: fingerprint || pendingSendFingerprint(run),
+  });
+  let raw;
+  try {
+    raw = await chrome.runtime.sendMessage({ type: 'MIGRATE_SEND', runId: run.runId, ...payload });
+  } catch (error) {
+    // SW 连接中断 / 响应丢失：先看 Run 上有没有已落盘的终态证据，再决定。
+    const fresh = await getRun(run.runId).catch(() => null);
+    if (fresh && fresh.finalStatus && fresh.finalStatus !== 'RUNNING') {
+      return { sendResult: outcomeFromRun(fresh), run: fresh };
+    }
+    return { unresolved: { run: fresh || run, error } };
+  }
+  return { sendResult: raw, run: await getRun(run.runId).catch(() => run) };
+}
+
+// 本次来源的上一次发送状态。只影响同一来源，绝不因其它来源有未决发送而阻挡迁移。
+async function reconcileInterruptedSend(sourceSessionId) {
+  let runs = [];
+  try { runs = await listRunsFor(sourceSessionId); } catch { return { state: 'none' }; }
+  if (!runs.length) return { state: 'none' };
+  runs.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+  const run = runs[0];
+  if (run.finalStatus === 'RUNNING') {
+    const stage = run.pendingSend?.stage;
+    if (stage === 'intent') return { state: 'not_sent', run };      // 发送按钮从未触发
+    return { state: 'uncertain', run, stage: stage || 'unknown' };  // 无法证明已发/未发
+  }
+  // 终态但面板尚未确认展示（pendingSend 未清）→ 结果没传回来，需要恢复。
+  if (run.pendingSend) return { state: run.finalStatus === 'SUCCESS' ? 'success' : 'failed', run };
+  return { state: 'none' };
+}
+
+function clearSendRecovery() {
+  const box = $('sendRecovery');
+  if (box) box.hidden = true;
+  $('sendRecoveryActions').textContent = '';
+  $('sendRecoveryText').textContent = '';
+}
+
+function renderSendRecovery({ text, actions = [] }) {
+  $('sendRecoveryText').textContent = text;
+  const box = $('sendRecoveryActions');
+  box.textContent = '';
+  for (const a of actions) box.appendChild(failureButton(a.label, a.cls, a.onClick));
+  $('sendRecovery').hidden = false;
+}
+
+const targetSessionUrl = id => (id ? `https://chat.deepseek.com/a/chat/s/${id}` : null);
+
+// 持久提示：给出可理解的说明；只有 UNCERTAIN/success 才主动占用侧栏首页。
+function showRecoveryNotice(rec) {
+  if (rec.state === 'uncertain') {
+    const url = targetSessionUrl(rec.run?.targetSessionId);
+    renderSendRecovery({
+      text: '上一次接续发送中断，暂时无法确认是否已发送成功。为避免重复创建会话，桥没有自动重发。已生成的接续稿仍然保留。',
+      actions: [
+        ...(url ? [{ label: '查看已有会话', cls: 'secondary-button', onClick: () => window.open(url, '_blank') }] : []),
+        { label: '仍要重新发送（可能产生重复会话）', cls: 'primary-button', onClick: () => acknowledgeAndResend(rec) },
+      ],
+    });
+    return;
+  }
+  if (rec.state === 'success') {
+    const url = targetSessionUrl(rec.run?.targetSessionId);
+    renderSendRecovery({
+      text: '上一次接续发送其实已经完成，只是结果没能传回来。桥没有重复发送。',
+      actions: [
+        ...(url ? [{ label: '打开接续的新会话', cls: 'primary-button', onClick: () => window.open(url, '_blank') }] : []),
+        { label: '知道了', cls: 'text-button', onClick: async () => { await clearRunPendingSend(rec.run.runId).catch(() => {}); clearSendRecovery(); } },
+      ],
+    });
+    return;
+  }
+  clearSendRecovery();
+}
+
+// 用户已明确接受重复风险：旧 Run 保留为可区分记录（不覆盖），再走正常迁移入口发新 Run。
+async function acknowledgeAndResend(rec) {
+  await updateRun(rec.run.runId, { finalStatus: 'UNCERTAIN_ACK', pendingSend: null }).catch(() => {});
+  clearSendRecovery();
+  await migrate($('strategyForge')?.checked === true, providerValue());
+}
+
+// 发送响应缺失（SW 中断）时的分流：按 SW 落盘的 stage 判定未发送 / 不确定。
+async function handleUnresolvedSend({ result, draft, run, mode, content, forgeRun, metadata }) {
+  const sessionId = result.session.sessionId;
+  const stage = run?.pendingSend?.stage || 'unknown';
+  if (webForgeJob && webForgeJob.sourceSessionId === sessionId && stage !== 'intent') {
+    webForgeJob.status = 'paused_uncertain';   // 整理稿保留，绝不自动重发
+    await saveWebForgeJob().catch(() => {});
+  }
+  hideAllOutcomePages();
+  $('migrationHome').hidden = false;
+  if (stage === 'intent') {
+    renderSendRecovery({
+      text: '上一次接续发送没有真正发出（发送按钮还未触发）。已生成的接续稿仍然保留，可以直接重新发送，不需要重新整理。',
+      actions: [
+        { label: '重新发送（复用已有接续稿）', cls: 'primary-button', onClick: () => resendDraft(draft, { result, forgeRun }) },
+        { label: '知道了', cls: 'text-button', onClick: async () => { await clearRunPendingSend(run.runId).catch(() => {}); clearSendRecovery(); } },
+      ],
+    });
+  } else {
+    showRecoveryNotice({ state: 'uncertain', run, stage });
+  }
+  recordTechnical(`发送中断（${stage}）`, run?.runId || null);
+}
+
 // 统一发送：exact 与 rolling 共用一条 native 发送链。ASSEMBLED 只是「整理稿可用」，
 // 只有这里发出且收到可确认的结果，才算迁移完成（DONE）。
-async function sendMigrationDraft(result, { mode, content, forgeRun = null, metadata = {}, plan = null, incurred = null }) {
+async function sendMigrationDraft(result, { mode, content, forgeRun = null, metadata = {}, plan = null, incurred = null, fingerprint = null }) {
   const draft = await createDraft({ sourceSessionId: result.session.sessionId, mode, content, metadata });
   const run = await createRun({ draftId: draft.draftId, sourceSessionId: result.session.sessionId, mode, transport: 'native-composer' });
   completedDraft = draft;
   completedRun = run;
-  showSendProgress(mode === 'exact' ? '正在写入新会话…' : '正在发送接续稿…');
-  const sendResult = await chrome.runtime.sendMessage({
-    type: 'MIGRATE_SEND', runId: run.runId, draftId: draft.draftId,
-    sourceSessionId: result.session.sessionId, mode, content,
-    lineage: forgeRun?.rolled?.continuity ? { continuity: forgeRun.rolled.continuity } : null,
-  });
-  const freshRun = await getRun(run.runId).catch(() => run);
-  completedRun = freshRun || run;
   completedText = content;
   completedMigration = {
     strategy: mode === 'rolling' ? 'forge' : 'full',
@@ -569,6 +707,25 @@ async function sendMigrationDraft(result, { mode, content, forgeRun = null, meta
     inputChars: forgeRun ? forgeRun.inputChars : result.analysis.selected.cleanTextChars,
     migrationChars: countChars(content),
   };
+  showSendProgress(mode === 'exact' ? '正在写入新会话…' : '正在发送接续稿…');
+  let dispatched;
+  try {
+    dispatched = await dispatchSend(run, {
+      draftId: draft.draftId, sourceSessionId: result.session.sessionId, mode, content,
+      lineage: forgeRun?.rolled?.continuity ? { continuity: forgeRun.rolled.continuity } : null,
+    }, { fingerprint: fingerprint || plan?.fingerprint || null });
+  } catch (error) {
+    recordTechnical('记录发送意图失败', error);
+    say('无法记录这次发送意图，为避免重复发送，桥已中止。会话内容未被改动，可稍后重试。', 'err');
+    hideProgress();
+    return;
+  }
+  if (dispatched.unresolved) {
+    await handleUnresolvedSend({ result, draft, run: dispatched.unresolved.run, mode, content, forgeRun, metadata });
+    return;
+  }
+  const sendResult = dispatched.sendResult;
+  completedRun = dispatched.run || run;
   // Web Forge 收尾：只有发送可确认成功，job 才真正 DONE，随后关闭桥自己创建的工作标签页。
   if (webForgeJob && webForgeJob.sourceSessionId === result.session.sessionId) {
     if (sendResult?.outcomeType === 'SUCCESS') {
@@ -595,6 +752,8 @@ async function finalizeMigration(result, options) {
 
 function routeOutcome(sendResult, ctx) {
   const type = sendResult?.outcomeType || 'UNKNOWN';
+  // 面板已拿到并即将展示终态 → 清除未决标记（表示已确认，不再是待对账的发送）。
+  if (completedRun?.runId) clearRunPendingSend(completedRun.runId).catch(() => {});
   if (type === 'SUCCESS') {
     renderNativeComplete(ctx, sendResult);
     $('migrationHome').hidden = true;
@@ -908,13 +1067,16 @@ function setupDraftEditor() {
       completedDraft = draft;
       completedRun = run;
       showSendProgress('正在把修改后的迁移稿写入新会话…');
-      const sendResult = await chrome.runtime.sendMessage({
-        type: 'MIGRATE_SEND', runId: run.runId, draftId: draft.draftId,
-        sourceSessionId: result.session.sessionId, mode, content: edited,
+      const dispatched = await dispatchSend(run, {
+        draftId: draft.draftId, sourceSessionId: result.session.sessionId, mode, content: edited,
         lineage: forgeRun ? { continuity: forgeRun.rolled?.continuity || null } : null,
       });
-      const freshRun = await getRun(run.runId).catch(() => run);
-      completedRun = freshRun || run;
+      if (dispatched.unresolved) {
+        await handleUnresolvedSend({ result, draft, run: dispatched.unresolved.run, mode, content: edited, forgeRun });
+        return;
+      }
+      const sendResult = dispatched.sendResult;
+      completedRun = dispatched.run || run;
       completedText = edited;
       completedMigration = {
         strategy: mode === 'rolling' ? 'forge' : 'full',
@@ -1014,6 +1176,22 @@ async function migrateInternal(useForge, provider = 'api') {
   try {
     const result = source.kind === 'history' ? await analysisFor(source.sessionId) : await captureCurrentSession();
     showCurrent(result);
+
+    // C-1：同一来源上一次发送若未决，绝不在这次点击时静默重发。
+    const recovery = await reconcileInterruptedSend(result.session.sessionId);
+    if (recovery.state === 'uncertain' || recovery.state === 'success') {
+      showRecoveryNotice(recovery);
+      hideAllOutcomePages();
+      $('migrationHome').hidden = false;
+      return;
+    }
+    if (recovery.state === 'not_sent') {
+      await updateRun(recovery.run.runId, { finalStatus: 'NOT_SENT', pendingSend: null }).catch(() => {});
+      clearSendRecovery();
+    } else if (recovery.state === 'failed') {
+      await updateRun(recovery.run.runId, { pendingSend: null }).catch(() => {});
+      clearSendRecovery();
+    }
 
     // 整理前预判（纯函数）：先看清来源，再决定要不要花模型调用/工作会话。
     const lineage = await getForgeState(result.session.sessionId).catch(() => null);

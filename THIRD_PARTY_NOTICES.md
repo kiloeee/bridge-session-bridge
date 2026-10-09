@@ -41,7 +41,7 @@
 
 | 文件 | 来自 Liuxd-1230（MIT）的原始代码 | kiloeee（GPL-3.0-only）的修改贡献 |
 |---|---|---|
-| `manifest.json` | 上游清单结构 | 更名、升版（0.4.2）、增加 recorder/transport 内容脚本与侧栏配置 |
+| `manifest.json` | 上游清单结构 | 更名、升版（0.4.3）、增加 recorder/transport 内容脚本与侧栏配置 |
 | `src/background.js` | 上游后台骨架 | 扩展流生命周期：规范快照、draft/run 落库、结果判定、工作标签页驱动 |
 | `src/content.js` | 上游内容脚本 | 扩展 `history_messages` 调用与自检接线 |
 | `src/db.js` | 上游 IndexedDB 层 | 扩展 `drafts` / `runs` store |

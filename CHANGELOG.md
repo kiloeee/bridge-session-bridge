@@ -3,6 +3,24 @@
 All notable changes to 桥 · Session Bridge are recorded here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.3] — 2026-10-09
+
+Send-interruption recovery patch. Fixes a risk of duplicate sends when a
+migration send is interrupted mid-flight.
+
+### Fixed
+
+- **Write-ahead send intent.** The panel records the pending send
+  (`intent` → `dispatching` → `dispatched`) before dispatching, so a
+  service-worker interruption during a send no longer leaves an unresolvable
+  `RUNNING` run with no way to tell whether the message went out.
+- **No silent re-send after an interruption.** Re-selecting the source reconciles
+  the previous send first: not actually sent → the user is told and offered
+  「重新发送（复用已有接续稿）」; clicked-but-unknown → a "cannot confirm"
+  notice, and **no automatic re-send**.
+- **Wiring fix.** The unresolved-send branch read the wrong field, mislabelling a
+  not-sent run as *uncertain* and rendering a button that threw on click.
+
 ## [0.4.2] — 2026-10-09
 
 Rolling-compression full-chain fix. The goal of this release is that **clicking

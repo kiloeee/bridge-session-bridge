@@ -76,6 +76,8 @@ let lineageState = null;
 let migrateSendResult = { ok: true, outcomeType: 'SUCCESS', detail: null, targetSessionId: '11111111-1111-1111-1111-111111111111', requestPromptChars: null, refFileIdsCount: 0, diagnostic: { status: 'FINISHED', quasiStatus: 'FINISHED', httpStatus: 200 } };
 // v0.4：app.js 走 Draft/Run 持久层与 MIGRATE_SEND 消息；这里用同形状 stub。
 let draftSeq = 0;
+// C-1：同一来源的上一次发送记录。默认空（正常路径没有任何未决发送）。
+let listRuns = [];
 const context = vm.createContext({ ...phase0, ...forge, ...plan, excludeBootstrapEntry,
   document: {
     getElementById: id => nodes.get(id),
@@ -101,6 +103,10 @@ const context = vm.createContext({ ...phase0, ...forge, ...plan, excludeBootstra
     ({ runId: `r${draftId}`, draftId, sourceSessionId, mode, transport, startedAt: Date.now(), completedAt: null, targetSessionId: null, requestPromptChars: null, refFileIdsCount: null, finalStatus: 'RUNNING', errorClass: null, revisionCount: 1, diagnostic: {} }),
   getRun: async runId => ({ runId, finalStatus: migrateSendResult.outcomeType, targetSessionId: migrateSendResult.targetSessionId, requestPromptChars: migrateSendResult.requestPromptChars, refFileIdsCount: migrateSendResult.refFileIdsCount, diagnostic: migrateSendResult.diagnostic || {} }),
   updateRun: async (runId, patch) => ({ runId, ...patch }),
+  // C-1 发送意图：面板在 MIGRATE_SEND 之前落盘，后台在点击前后推进 stage。
+  markRunPendingSend: async (runId, patch) => ({ runId, pendingSend: patch }),
+  clearRunPendingSend: async runId => ({ runId, pendingSend: null }),
+  listRunsFor: async sourceSessionId => listRuns.filter(run => run.sourceSessionId === sourceSessionId),
   scanDraftPrivacy: () => ({ found: false, hits: [] }),
   buildMigrationReport: input => input,
   formatMigrationReport: () => 'migration report',
@@ -497,5 +503,53 @@ nodes.get('diagToggle').onclick();
 assert.equal(nodes.get('diagToggle').getAttribute('aria-expanded'), 'false');
 assert.equal(nodes.get('diagContent').hidden, true, 'Clicking 自检 again collapses the row');
 
-console.log('PASS local UI: one-click Full Exact and Forge migration, visible strategies, 滚动压缩 naming, source report kept separate from the rolling result report, copy test report without private text, lineage carry flag, Forge progress/cancel/failure, history reuses the migration flow, read recovery, collapsible 自检');
+// ── C-1：来源上存在「未决发送」时，再次点击迁移绝不静默重发（§3 核心规则）──────
+nodes.get('migrationTab').onclick();
+await settle();
+answerSnapshot(liveId);
+await settle();
+nodes.get('strategyFull').checked = true;
+nodes.get('strategyForge').checked = false;
+const sentBeforeC1 = sentMigrations.length;
+// 模拟：上一次发送在后台被杀，Run 停在 RUNNING、stage=dispatched（点击已确认，结果未知）。
+listRuns = [{ runId: 'run-interrupted', sourceSessionId: liveId, mode: 'exact',
+  finalStatus: 'RUNNING', targetSessionId: null, startedAt: Date.now(),
+  pendingSend: { stage: 'dispatched', tabId: 5 } }];
+nodes.get('migrateCurrent').onclick();
+await settle();
+answerSnapshot(liveId);
+await settle();
+assert.equal(sentMigrations.length, sentBeforeC1, '未决发送存在时，点击迁移不会再发一次');
+assert.equal(nodes.get('sendRecovery').hidden, false, '显示持久的未决发送提示（不是 6 秒 toast）');
+assert(nodes.get('sendRecoveryText').textContent.includes('无法确认'), '提示说明结果不确定，未自动重发');
+assert.equal(nodes.get('migrationComplete').hidden, true, '不确定的发送不会被当成迁移完成');
+assert.equal(nodes.get('migrationHome').hidden, false, '留在迁移页等待用户决定');
+
+// stage=intent（发送按钮从未触发）→ 已确认未发送：不占用侧栏做不确定提示，允许正常重发。
+listRuns = [{ runId: 'run-notsent', sourceSessionId: liveId, mode: 'exact',
+  finalStatus: 'RUNNING', targetSessionId: null, startedAt: Date.now(),
+  pendingSend: { stage: 'intent', tabId: null } }];
+const sentBeforeIntent = sentMigrations.length;
+nodes.get('migrateCurrent').onclick();
+await settle();
+answerSnapshot(liveId);
+await settle();
+assert.equal(nodes.get('sendRecovery').hidden, true, 'intent 阶段已确认未发送，不占用侧栏做不确定提示');
+assert.equal(sentMigrations.length, sentBeforeIntent + 1, '已确认未发送时允许直接重发（无重复会话风险）');
+
+// 其它来源有未决发送，不得阻挡本来源的正常迁移。
+listRuns = [{ runId: 'run-other', sourceSessionId: oldId, mode: 'exact',
+  finalStatus: 'RUNNING', targetSessionId: null, startedAt: Date.now(),
+  pendingSend: { stage: 'dispatched', tabId: 7 } }];
+nodes.get('strategyFull').checked = true;
+nodes.get('strategyForge').checked = false;
+const sentBeforeOther = sentMigrations.length;
+nodes.get('migrateCurrent').onclick();
+await settle();
+answerSnapshot(liveId);
+await settle();
+assert.equal(sentMigrations.length, sentBeforeOther + 1, '别的来源有未决发送，不阻挡当前来源迁移');
+listRuns = [];
+
+console.log('PASS local UI: one-click Full Exact and Forge migration, visible strategies, 滚动压缩 naming, source report kept separate from the rolling result report, copy test report without private text, lineage carry flag, Forge progress/cancel/failure, history reuses the migration flow, read recovery, collapsible 自检, C-1 未决发送不静默重发');
 console.log('Local stubs only; no model traffic, live DeepSeek capacity claim, or long-session E2E acceptance.');
