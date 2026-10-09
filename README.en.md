@@ -23,9 +23,9 @@ Chinese documentation: [`README.md`](README.md).
 
 ## Install
 
-Both ways work. The **store build is currently v0.4.1** (approved); the **latest
-public build on GitHub is v0.4.2** — the two update independently, so use
-Method 1 to get v0.4.2 right away.
+Both ways work. The **latest public build on GitHub is v0.4.2**; the **store still
+serves v0.4.1** while **v0.4.2 is submitted and under review** — the two update
+independently, so use Method 1 to get v0.4.2 right away.
 
 ### Method 1 — download from GitHub Releases (use this today)
 
@@ -53,10 +53,9 @@ Full step-by-step guide with the security details: [`docs/INSTALL.md`](docs/INST
 Store page:
 <https://microsoftedge.microsoft.com/addons/detail/bbgdkplomihlcgndbjmcjmphgnabffbj>
 
-The store build is currently **v0.4.1** (**approved and live**). Edge keeps the
-store build updated automatically; v0.4.2 will be submitted to the store next, so
-**until it clears, the store still serves v0.4.1**. To use v0.4.2 now, use
-Method 1.
+The store still serves **v0.4.1** while **v0.4.2 is submitted and under review**.
+Edge keeps the store build updated automatically, so **the store will move to
+v0.4.2 once it clears**. To use v0.4.2 now, use Method 1.
 
 ### Updating
 

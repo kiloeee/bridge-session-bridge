@@ -9,7 +9,7 @@
 | 你的情况 | 用哪种方式 |
 |---|---|
 | 现在就想用最新版 | **方式一：GitHub Releases 下载**（最新 v0.4.2） |
-| 想省心、自动更新 | **方式二：Edge 商店**（当前上架 v0.4.1，已通过审核） |
+| 想省心、自动更新 | **方式二：Edge 商店**（v0.4.2 已提交、审核中；通过前商店仍是 v0.4.1） |
 
 无论哪种，**不需要** npm、Python、编译，也不需要 DeepSeek API Key —— 默认的「完整原文」迁移在本机完成，不联网。
 
@@ -60,7 +60,7 @@ Get-FileHash .\bridge-v0.4.2-edge.zip -Algorithm SHA256
 
 <https://microsoftedge.microsoft.com/addons/detail/bbgdkplomihlcgndbjmcjmphgnabffbj>
 
-> 商店当前上架的是 **v0.4.1**（**已通过审核**）。商店版由 Edge 自动更新；v0.4.2 会随后提交商店，审核通过后自动更新到 v0.4.2。想马上用到 v0.4.2 请用方式一。
+> 商店目前仍是 **v0.4.1**。**v0.4.2 已提交 Microsoft Edge 商店、正在审核中**；商店版由 Edge 自动更新，审核通过后会自动更新到 v0.4.2。想马上用到 v0.4.2 请用方式一。
 
 ---
 
