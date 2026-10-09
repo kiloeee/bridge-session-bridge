@@ -12,7 +12,7 @@ session and lets you keep going.
 | | |
 |---|---|
 | Manifest name | `桥 · Session Bridge` |
-| Version | 0.4.2 |
+| Version | 0.4.3 |
 | Target | Edge / Chrome, Manifest V3, side panel |
 | Runtime dependencies | **none** |
 | License | GPL-3.0-only (upstream-derived portions remain MIT) — see [`LICENSE`](LICENSE) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) |
@@ -23,14 +23,15 @@ Chinese documentation: [`README.md`](README.md).
 
 ## Install
 
-Both ways work. The **latest public build on GitHub is v0.4.2**; the **store still
-serves v0.4.1** while **v0.4.2 is submitted and under review** — the two update
-independently, so use Method 1 to get v0.4.2 right away.
+Both ways work. The **latest public build on GitHub is v0.4.3**; the **store still
+serves v0.4.1** while **v0.4.2 is submitted and under review** (v0.4.3 will be
+submitted after that clears) — the two update independently, so use Method 1 to
+get v0.4.3 right away.
 
 ### Method 1 — download from GitHub Releases (use this today)
 
 1. Open the [Releases page](https://github.com/kiloeee/bridge-session-bridge/releases).
-2. Under **Assets**, download **`bridge-v0.4.2-edge.zip`** — *not* the
+2. Under **Assets**, download **`bridge-v0.4.3-edge.zip`** — *not* the
    "Source code" ZIP that GitHub adds automatically.
 3. Unzip it to a folder you will keep.
 4. In Edge's address bar, open `edge://extensions`.
@@ -41,8 +42,8 @@ independently, so use Method 1 to get v0.4.2 right away.
 
 Full step-by-step guide with the security details: [`docs/INSTALL.md`](docs/INSTALL.md).
 
-> **Verify your download.** `bridge-v0.4.2-edge.zip` SHA-256:
-> `489008dae40751c00ee0f59176b7078e80ad5388418cf7dacdf65426c50c89d0`
+> **Verify your download.** `bridge-v0.4.3-edge.zip` SHA-256:
+> `eaed4b060b6793744a6313b007dff094150f559043db5d8af3b8a4f9e4b2ead7`
 
 - The ZIP **cannot** be installed by double-clicking it. Edge needs the
   *unpacked* folder.
@@ -54,8 +55,9 @@ Store page:
 <https://microsoftedge.microsoft.com/addons/detail/bbgdkplomihlcgndbjmcjmphgnabffbj>
 
 The store still serves **v0.4.1** while **v0.4.2 is submitted and under review**.
-Edge keeps the store build updated automatically, so **the store will move to
-v0.4.2 once it clears**. To use v0.4.2 now, use Method 1.
+Edge keeps the store build updated automatically, and **v0.4.3 will be submitted
+once v0.4.2 clears** — until then the GitHub build (Method 1) is the newest. To
+use v0.4.3 now, use Method 1.
 
 ### Updating
 

@@ -1,4 +1,4 @@
-# 安装与更新 · 桥 · Session Bridge v0.4.2
+# 安装与更新 · 桥 · Session Bridge v0.4.3
 
 本页面向**普通用户**。看完就能装好、能用、能更新。
 
@@ -8,7 +8,7 @@
 
 | 你的情况 | 用哪种方式 |
 |---|---|
-| 现在就想用最新版 | **方式一：GitHub Releases 下载**（最新 v0.4.2） |
+| 现在就想用最新版 | **方式一：GitHub Releases 下载**（最新 v0.4.3） |
 | 想省心、自动更新 | **方式二：Edge 商店**（v0.4.2 已提交、审核中；通过前商店仍是 v0.4.1） |
 
 无论哪种，**不需要** npm、Python、编译，也不需要 DeepSeek API Key —— 默认的「完整原文」迁移在本机完成，不联网。
@@ -19,30 +19,30 @@
 
 1. 打开本仓库的 **Releases** 页面：
    `https://github.com/kiloeee/bridge-session-bridge/releases`
-2. 在 **Assets** 下面下载 **`bridge-v0.4.2-edge.zip`**。
+2. 在 **Assets** 下面下载 **`bridge-v0.4.3-edge.zip`**。
    - **不要**下载 GitHub 自动生成的「Source code (zip)」。那个是源码，不能安装。
 3. 把 ZIP **解压到一个你会长期保留的固定文件夹**。
-   - 例如 `D:\bridge-v0.4.2\`。
+   - 例如 `D:\bridge-v0.4.3\`。
    - 解压后该文件夹里应能直接看到 `manifest.json`。
 4. 在 Edge 地址栏输入 `edge://extensions` 并回车。
 5. 打开左下角的 **开发人员模式**。
 6. 点 **加载解压缩的扩展**，选择第 3 步那个**含 `manifest.json` 的文件夹**。
 7. 打开 `https://chat.deepseek.com/`，点浏览器工具栏里的扩展图标，打开侧边栏。
 
-完成后扩展卡片上应显示 **桥 · Session Bridge**，版本 **0.4.2**。
+完成后扩展卡片上应显示 **桥 · Session Bridge**，版本 **0.4.3**。
 
 ### 核对下载是否完整
 
-`bridge-v0.4.2-edge.zip` 的 SHA-256：
+`bridge-v0.4.3-edge.zip` 的 SHA-256：
 
 ```
-489008dae40751c00ee0f59176b7078e80ad5388418cf7dacdf65426c50c89d0
+eaed4b060b6793744a6313b007dff094150f559043db5d8af3b8a4f9e4b2ead7
 ```
 
 Windows 上核对方法（在存放 ZIP 的文件夹打开 PowerShell）：
 
 ```powershell
-Get-FileHash .\bridge-v0.4.2-edge.zip -Algorithm SHA256
+Get-FileHash .\bridge-v0.4.3-edge.zip -Algorithm SHA256
 ```
 
 输出与上面一致即可。
@@ -60,7 +60,7 @@ Get-FileHash .\bridge-v0.4.2-edge.zip -Algorithm SHA256
 
 <https://microsoftedge.microsoft.com/addons/detail/bbgdkplomihlcgndbjmcjmphgnabffbj>
 
-> 商店目前仍是 **v0.4.1**。**v0.4.2 已提交 Microsoft Edge 商店、正在审核中**；商店版由 Edge 自动更新，审核通过后会自动更新到 v0.4.2。想马上用到 v0.4.2 请用方式一。
+> 商店目前仍是 **v0.4.1**。**v0.4.2 已提交 Microsoft Edge 商店、正在审核中**；商店版由 Edge 自动更新，v0.4.3 会在 v0.4.2 审核结束后再提交。**在商店更新之前，GitHub 解压版（方式一）就是最新版**，想马上用到 v0.4.3 请用方式一。
 
 ---
 

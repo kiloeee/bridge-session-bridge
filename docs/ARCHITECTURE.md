@@ -1,7 +1,7 @@
 # Architecture
 
 This document describes what the code actually does. It is written against
-v0.4.2 and does not describe planned work.
+v0.4.3 and does not describe planned work.
 
 ## Shape of the system
 

@@ -9,7 +9,7 @@
 | | |
 |---|---|
 | 清单名称 | `桥 · Session Bridge` |
-| 版本 | 0.4.2 |
+| 版本 | 0.4.3 |
 | 目标平台 | Edge / Chrome，Manifest V3，侧边栏 |
 | 运行时依赖 | **无** |
 | 许可证 | GPL-3.0-only（上游派生部分保留 MIT）—— 见 [`LICENSE`](LICENSE) 与 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) |
@@ -20,12 +20,12 @@
 
 ## 安装
 
-两种方式都可以用。**GitHub 最新公开版为 v0.4.2**；**商店版目前仍是 v0.4.1**（**v0.4.2 已提交 Microsoft Edge 商店、正在审核中**）。两者更新节奏独立 —— 想马上用到 v0.4.2 请用方式一。
+两种方式都可以用。**GitHub 最新公开版为 v0.4.3**；**商店版目前仍是 v0.4.1**（**v0.4.2 已提交 Microsoft Edge 商店、正在审核中**，v0.4.3 待其出结果后再提交）。两者更新节奏独立 —— 想马上用到 v0.4.3 请用方式一。
 
 ### 方式一：从 GitHub Releases 下载（现在就用这个）
 
 1. 打开 [Releases 页面](https://github.com/kiloeee/bridge-session-bridge/releases)。
-2. 在 **Assets** 里下载 **`bridge-v0.4.2-edge.zip`** —— *不要*下载 GitHub 自动生成的「Source code」压缩包。
+2. 在 **Assets** 里下载 **`bridge-v0.4.3-edge.zip`** —— *不要*下载 GitHub 自动生成的「Source code」压缩包。
 3. 解压到一个固定的文件夹。
 4. 在 Edge 地址栏输入 `edge://extensions`。
 5. 打开左下角的**开发人员模式**。
@@ -34,8 +34,8 @@
 
 带安全说明的完整分步教程见 [`docs/INSTALL.md`](docs/INSTALL.md)。
 
-> **核对你的下载。** `bridge-v0.4.2-edge.zip` 的 SHA-256：
-> `489008dae40751c00ee0f59176b7078e80ad5388418cf7dacdf65426c50c89d0`
+> **核对你的下载。** `bridge-v0.4.3-edge.zip` 的 SHA-256：
+> `eaed4b060b6793744a6313b007dff094150f559043db5d8af3b8a4f9e4b2ead7`
 
 - ZIP **不能**双击直接安装，Edge 需要的是解压后的文件夹。
 - 使用基本功能**不需要** npm、Python 或 API Key。
@@ -45,7 +45,7 @@
 商店页：
 <https://microsoftedge.microsoft.com/addons/detail/bbgdkplomihlcgndbjmcjmphgnabffbj>
 
-商店版目前仍是 **v0.4.1**。**v0.4.2 已提交 Microsoft Edge 商店、正在审核中**；商店版由 Edge 自动更新，审核通过后商店会更新到 v0.4.2，**在通过审核前，商店里仍是 v0.4.1**。想马上用到 v0.4.2，请用方式一。
+商店版目前仍是 **v0.4.1**。**v0.4.2 已提交 Microsoft Edge 商店、正在审核中**；商店版由 Edge 自动更新，v0.4.3 会在 v0.4.2 审核结束后再提交，**在商店更新之前，GitHub 解压版（方式一）就是最新版**。想马上用到 v0.4.3，请用方式一。
 
 ### 更新
 
