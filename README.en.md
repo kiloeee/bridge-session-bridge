@@ -23,8 +23,9 @@ Chinese documentation: [`README.md`](README.md).
 
 ## Install
 
-There are two ways to install. **Method 1 works right now** (the Microsoft Edge
-Add-ons build is still under review).
+Both ways work. The **store build is currently v0.4.1** (approved); the **latest
+public build on GitHub is v0.4.2** — the two update independently, so use
+Method 1 to get v0.4.2 right away.
 
 ### Method 1 — download from GitHub Releases (use this today)
 
@@ -52,9 +53,10 @@ Full step-by-step guide with the security details: [`docs/INSTALL.md`](docs/INST
 Store page:
 <https://microsoftedge.microsoft.com/addons/detail/bbgdkplomihlcgndbjmcjmphgnabffbj>
 
-The v0.4.1 submission is **still under review**. Once it clears, the store build
-becomes the recommended install (Edge keeps it updated automatically). Until
-then, use Method 1.
+The store build is currently **v0.4.1** (**approved and live**). Edge keeps the
+store build updated automatically; v0.4.2 will be submitted to the store next, so
+**until it clears, the store still serves v0.4.1**. To use v0.4.2 now, use
+Method 1.
 
 ### Updating
 
@@ -70,7 +72,9 @@ you move folders or install both build types.
 
 - **Exact migration (完整原文)** — carries the conversation's cleaned dialogue
   text into a new session verbatim. No summarising, no rewriting, no trimming.
-  Runs entirely on your machine; performs **no network request**.
+  The **local cleaning** (dropping thinking, tool calls, raw frames, attachments)
+  runs entirely on your machine and never touches the developer's servers; the
+  **final text** is then sent as one new message into **a new DeepSeek session**.
 - **Rolling compression (滚动摘要)** — for conversations too long to carry
   verbatim. Older turns are distilled into a *continuity state*, while key
   passages and the recent conversation are kept **word-for-word**.
@@ -129,8 +133,10 @@ first time it is read, so the next rolling pass continues without any manual
 import. Exact migration does **not** create a generation.
 
 If rolling output turns out *larger* than the source (common for short
-conversations), the extension does not migrate the larger packet — it says the
-conversation does not need compression yet and offers exact migration instead.
+conversations), the extension does not migrate the larger packet — it
+**automatically falls back to exact migration in the same pass**, and the
+completion screen states which mode was actually used (and any cost already
+incurred). There is no second confirmation step.
 
 ---
 
@@ -157,14 +163,17 @@ same shape either way.
 The short version: **there is no server.** The full policy is in
 [`PRIVACY.md`](PRIVACY.md).
 
-- **Exact migration is entirely local** and makes no network request.
+- **Exact migration cleans locally** — the cleaning never touches the developer's
+  servers; the final text is sent as one new message into **a new DeepSeek
+  session**, so it does reach DeepSeek.
 - **Archives stay local.** They live in your browser's IndexedDB; the backup JSON
   the extension can produce contains your full conversation content, so treat it
   as sensitive.
-- **Rolling compression, and only rolling compression, goes online** — and only
-  when you choose it and have configured a key. What is sent is the cleaned
-  dialogue text for the current chunk plus the previous continuity state. Not
-  sent: thinking traces, search records, raw tool output, raw SSE frames,
+- **Only rolling compression sends model requests** — either the **free Web path**
+  (your logged-in DeepSeek page, no key required, and it creates worker sessions
+  under your account) or the **API path** (your own key). What is sent is the
+  cleaned dialogue text for the current chunk plus the previous continuity state.
+  Not sent: thinking traces, search records, raw tool output, raw SSE frames,
   attachments.
 - **Your API key** lives only in `chrome.storage.local` (or `session` storage if
   you don't check "remember"). It never enters the conversation archive, never
